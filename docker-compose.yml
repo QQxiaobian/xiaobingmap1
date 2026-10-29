@@ -1,11 +1,11 @@
 # 小兵地图 - 飞牛 Docker 部署配置
-# 直接从 GitHub 仓库拉取并构建，无需用户手动下载文件
+# 从本地目录构建，需将项目文件放在 docker-compose.yml 同级目录
 # 后端监听 8678 端口，仅 HTTP，由 FN Connect 提供 HTTPS
 # 数据持久化在 ./data 目录
 
 services:
   xiaobingmap:
-    build: https://github.com/QQxiaobian/xiaobingmap1.git
+    build: .
     container_name: xiaobingmap
     restart: unless-stopped
     ports:
