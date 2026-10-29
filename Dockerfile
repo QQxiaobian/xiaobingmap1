@@ -37,6 +37,11 @@ ENV NODE_ENV=production
 ENV PORT=8678
 ENV DB_PATH=/app/data/xiaobingmap.db
 
+RUN apk add --no-cache wget
+
 EXPOSE 8678
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -q -O- http://localhost:8678/api/health || exit 1
 
 CMD ["node", "server/index.js"]

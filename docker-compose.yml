@@ -19,3 +19,9 @@ services:
       # 修改 JWT 密钥增强安全性
       - JWT_SECRET=change-this-secret-in-production
     # 不配置 SSL，由飞牛 FN Connect 处理 HTTPS
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8678/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
