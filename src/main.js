@@ -100,6 +100,55 @@ function renderGPSBtn() {
   };
 }
 
+// ---- 坐标搜索 ----
+function parseCoordInput(input) {
+  input = input.trim();
+  // 度分秒格式: 25°08'52.4"N 103°02'39.1"E
+  const dmsMatch = input.match(/(\d+)°\s*(\d+)['′]\s*([\d.]+)["″]?\s*([NSns])?[\s,]+(\d+)°\s*(\d+)['′]\s*([\d.]+)["″]?\s*([EWewE]?)/);
+  if (dmsMatch) {
+    const lat = parseInt(dmsMatch[1]) + parseInt(dmsMatch[2]) / 60 + parseFloat(dmsMatch[3]) / 3600;
+    const lng = parseInt(dmsMatch[5]) + parseInt(dmsMatch[6]) / 60 + parseFloat(dmsMatch[7]) / 3600;
+    const latVal = (dmsMatch[4] || '').toUpperCase() === 'S' ? -lat : lat;
+    const lngVal = (dmsMatch[8] || '').toUpperCase() === 'W' ? -lng : lng;
+    return { lat: latVal, lng: lngVal };
+  }
+  // 十进制: lng,lat 或 lat,lng
+  const parts = input.split(/[\s,]+/).filter(s => s).map(parseFloat);
+  if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+    // 中国经度 70-140, 纬度 0-55 — 判断哪个是经度
+    let [a, b] = parts;
+    if (a >= 60 && a <= 150) {
+      // a 是经度
+      return { lat: b, lng: a };
+    } else if (b >= 60 && b <= 150) {
+      // b 是经度
+      return { lat: a, lng: b };
+    }
+    // 默认: 第一个是经度
+    return { lat: b, lng: a };
+  }
+  return null;
+}
+
+function renderSearchBox() {
+  const input = document.getElementById('coordSearch');
+  const btn = document.getElementById('searchGo');
+  const doSearch = () => {
+    const val = input.value.trim();
+    if (!val) { toast('请输入坐标'); return; }
+    const coord = parseCoordInput(val);
+    if (!coord) {
+      toast('无法解析坐标，请输入如: 103.044,25.147');
+      return;
+    }
+    // 如果当前是 GCJ02 图源，把输入坐标当 WGS84 处理
+    mapMgr.flyToCoord(coord.lat, coord.lng);
+    toast(`已定位: ${coord.lng.toFixed(6)}, ${coord.lat.toFixed(6)}`);
+  };
+  btn.onclick = doSearch;
+  input.onkeydown = (e) => { if (e.key === 'Enter') doSearch(); };
+}
+
 // ---- 坐标显示 ----
 function updateCoordDisplay(latlng) {
   const el = document.querySelector('.coord-display');
@@ -665,6 +714,10 @@ async function init() {
       <div class="side-panel"><div class="panel-header"><h2></h2></div><div class="panel-body"></div></div>
       <div class="map-container">
         <div class="toolbar"></div>
+        <div class="search-box">
+          <input type="text" id="coordSearch" placeholder="搜索坐标: 经度,纬度 或 度分秒" title="输入坐标定位，如 103.044,25.147">
+          <button id="searchGo" title="定位">🔍</button>
+        </div>
         <div id="map"></div>
         <button class="gps-btn" title="GPS定位">⊙</button>
         <div class="coord-display">--</div>
@@ -682,6 +735,7 @@ async function init() {
   renderTopbar();
   renderToolbar();
   renderGPSBtn();
+  renderSearchBox();
 
   // 调试控制台事件
   document.getElementById('dbgClear').onclick = () => { clearLogs(); renderDebugLogs(); };

@@ -143,6 +143,36 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
 }
 .form-textarea { resize: vertical; min-height: 60px; }
 
+/* ===== 搜索框 ===== */
+.search-box {
+  position: absolute;
+  top: 12px; left: 66px;
+  z-index: 500;
+  display: flex;
+  gap: 4px;
+}
+.search-box input {
+  width: 220px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: inherit;
+  box-shadow: var(--shadow);
+  transition: border-color 0.2s;
+}
+.search-box input:focus { outline: none; border-color: var(--primary); }
+.search-box button {
+  width: 36px; height: 36px;
+  background: var(--surface);
+  border: none; border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  cursor: pointer; font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.2s;
+}
+.search-box button:hover { background: var(--primary); color: #fff; }
+
 /* ===== 浮动工具栏 ===== */
 .toolbar {
   position: absolute;
@@ -227,19 +257,33 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
 
 /* ===== 标记图标 ===== */
 .xb-marker-pin {
-  width: 30px; height: 30px;
+  width: 14px; height: 14px;
   background: var(--primary);
-  border-radius: 50% 50% 50% 0;
-  transform: rotate(-45deg);
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: var(--shadow);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  position: absolute;
+  top: 3px; left: 50%;
+  transform: translateX(-50%);
 }
-.xb-marker-pin span {
-  transform: rotate(45deg);
-  color: #fff; font-size: 9px; font-weight: 700;
-  max-width: 26px; overflow: hidden; text-align: center;
-  white-space: nowrap; text-overflow: ellipsis;
+.xb-marker-label {
+  position: absolute;
+  top: 20px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(37,99,235,0.9);
+  color: #fff;
+  font-size: 11px; font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  pointer-events: none;
+  line-height: 1.3;
 }
+.xb-marker { position: relative; }
 
 /* ===== 空状态 ===== */
 .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
@@ -279,6 +323,8 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
   }
   .toolbar { top: 8px; left: 8px; }
   .toolbar .tool-btn { width: 38px; height: 38px; font-size: 18px; }
+  .search-box { top: 8px; left: 54px; }
+  .search-box input { width: 140px; font-size: 12px; }
   .modal { max-width: calc(100vw - 32px); }
   .gps-btn { bottom: 90px; right: 8px; }
 }

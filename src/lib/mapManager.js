@@ -223,13 +223,12 @@ export class MapManager {
   // ---- 点位 ----
   addMarker(marker) {
     const latlng = L.latLng(marker.lat, marker.lng);
-    // 图标上显示点位名称（截断到4字符）
-    const label = (marker.name || '').slice(0, 4) || '点';
+    const name = marker.name || '点位';
     const icon = L.divIcon({
       className: 'xb-marker',
-      html: `<div class="xb-marker-pin"><span>${esc(label)}</span></div>`,
-      iconSize: [30, 30],
-      iconAnchor: [15, 30],
+      html: `<div class="xb-marker-pin"></div><div class="xb-marker-label">${esc(name)}</div>`,
+      iconSize: [24, 24],
+      iconAnchor: [12, 24],
     });
     const m = L.marker(latlng, { icon }).addTo(this.map);
     m.bindPopup(`<b>${esc(marker.name)}</b><br/>${esc(marker.remark || '')}<br/><small>${esc(marker.group || '')}</small>`);
@@ -261,9 +260,17 @@ export class MapManager {
   // ---- 线路 ----
   addTrack(track) {
     const pts = (track.points || []).map(p => L.latLng(p[1], p[0]));
-    if (pts.length < 2) return;
+    if (pts.length < 1) return;
+    // 单点线路也显示为一个圆点
+    if (pts.length === 1) {
+      const dot = L.circleMarker(pts[0], { radius: 5, color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.8 }).addTo(this.map);
+      dot.bindPopup(`<b>${esc(track.name)}</b><br/>${esc(track.remark || '')}`);
+      dot.on('click', () => this.onTrackClick?.(track.id));
+      this.tracks.set(track.id, dot);
+      return dot;
+    }
     const line = L.polyline(pts, { color: '#2563eb', weight: 3 }).addTo(this.map);
-    line.bindPopup(`<b>${track.name}</b><br/>${track.remark || ''}`);
+    line.bindPopup(`<b>${esc(track.name)}</b><br/>${esc(track.remark || '')}`);
     line.on('click', () => this.onTrackClick?.(track.id));
     this.tracks.set(track.id, line);
     return line;
@@ -274,6 +281,22 @@ export class MapManager {
     if (t) { this.map.removeLayer(t); this.tracks.delete(id); }
   }
 
+  // ---- 坐标搜索定位 ----
+  flyToCoord(lat, lng, zoom = 16) {
+    const latlng = L.latLng(lat, lng);
+    this.map.setView(latlng, zoom);
+    // 临时标记
+    if (this._searchMarker) this.map.removeLayer(this._searchMarker);
+    this._searchMarker = L.circleMarker(latlng, {
+      radius: 10, color: '#dc2626', fillColor: '#f87171', fillOpacity: 0.6, weight: 2,
+    }).addTo(this.map);
+    this._searchMarker.bindPopup(`<b>搜索定位</b><br/>${lng.toFixed(6)}, ${lat.toFixed(6)}`).openPopup();
+    // 5秒后自动移除
+    setTimeout(() => {
+      if (this._searchMarker) { this.map.removeLayer(this._searchMarker); this._searchMarker = null; }
+    }, 8000);
+  }
+
   clearTracks() {
     this.tracks.forEach(t => this.map.removeLayer(t));
     this.tracks.clear();
@@ -281,7 +304,10 @@ export class MapManager {
 
   flyToTrack(track) {
     const t = this.tracks.get(track.id);
-    if (t) this.map.fitBounds(t.getBounds());
+    if (t) {
+      if (t.getBounds) this.map.fitBounds(t.getBounds());
+      else if (t.getLatLng) this.map.setView(t.getLatLng(), 16);
+    }
   }
 
   // ---- 绘制线路 ----

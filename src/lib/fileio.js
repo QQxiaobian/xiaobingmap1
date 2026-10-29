@@ -33,18 +33,57 @@ export function parseGeoJSON(json) {
   const markers = [], tracks = [];
   for (const f of data.features || []) {
     const props = f.properties || {};
-    if (f.geometry?.type === 'Point') {
-      const [lng, lat] = f.geometry.coordinates;
+    const geom = f.geometry;
+    if (!geom) continue;
+    if (geom.type === 'Point') {
+      const [lng, lat] = geom.coordinates;
       markers.push({
         id: uid(), name: props.name || '导入点位', remark: props.remark || '',
         group: props.group || '导入', lat, lng, updateAt: now(), _dirty: true,
       });
-    } else if (f.geometry?.type === 'LineString') {
+    } else if (geom.type === 'LineString') {
       tracks.push({
         id: uid(), name: props.name || '导入线路', remark: props.remark || '',
         group: props.group || '导入',
-        points: f.geometry.coordinates, updateAt: now(), _dirty: true,
+        points: geom.coordinates, updateAt: now(), _dirty: true,
       });
+    } else if (geom.type === 'MultiLineString') {
+      for (const line of geom.coordinates) {
+        if (line.length) {
+          tracks.push({
+            id: uid(), name: props.name || '导入线路', remark: props.remark || '',
+            group: props.group || '导入',
+            points: line, updateAt: now(), _dirty: true,
+          });
+        }
+      }
+    } else if (geom.type === 'Polygon') {
+      const outer = geom.coordinates[0];
+      if (outer && outer.length) {
+        tracks.push({
+          id: uid(), name: props.name || '导入区域', remark: props.remark || '',
+          group: props.group || '导入',
+          points: outer, updateAt: now(), _dirty: true,
+        });
+      }
+    } else if (geom.type === 'MultiPolygon') {
+      for (const poly of geom.coordinates) {
+        const outer = poly[0];
+        if (outer && outer.length) {
+          tracks.push({
+            id: uid(), name: props.name || '导入区域', remark: props.remark || '',
+            group: props.group || '导入',
+            points: outer, updateAt: now(), _dirty: true,
+          });
+        }
+      }
+    } else if (geom.type === 'MultiPoint') {
+      for (const [lng, lat] of geom.coordinates) {
+        markers.push({
+          id: uid(), name: props.name || '导入点位', remark: props.remark || '',
+          group: props.group || '导入', lat, lng, updateAt: now(), _dirty: true,
+        });
+      }
     }
   }
   return { markers, tracks };
@@ -80,6 +119,7 @@ export function parseGPX(text) {
       updateAt: now(), _dirty: true,
     });
   });
+  // trk 轨迹
   const trks = doc.querySelectorAll('trk');
   trks.forEach(trk => {
     const points = [];
@@ -89,6 +129,20 @@ export function parseGPX(text) {
     if (points.length) {
       tracks.push({
         id: uid(), name: trk.querySelector('name')?.textContent || '导入线路',
+        remark: '', group: '导入', points, updateAt: now(), _dirty: true,
+      });
+    }
+  });
+  // rte 路线
+  const rtes = doc.querySelectorAll('rte');
+  rtes.forEach(rte => {
+    const points = [];
+    rte.querySelectorAll('rtept').forEach(pt => {
+      points.push([parseFloat(pt.getAttribute('lon')), parseFloat(pt.getAttribute('lat'))]);
+    });
+    if (points.length) {
+      tracks.push({
+        id: uid(), name: rte.querySelector('name')?.textContent || '导入路线',
         remark: '', group: '导入', points, updateAt: now(), _dirty: true,
       });
     }
