@@ -4,6 +4,10 @@ import 'leaflet-draw';
 import { wgs84ToGcj02, gcj02ToWgs84, CRS } from './coord.js';
 import { getSettings } from './storage.js';
 
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 // 修复 Leaflet 默认图标路径
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -70,6 +74,24 @@ const tileSources = {
     attribution: 'Esri Terrain · 云南',
     maxZoom: 13,
   },
+  ghybrid: {
+    name: '高德卫星+地名',
+    url: 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
+    labelUrl: 'https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}',
+    attribution: '高德地图 AutoNavi (卫星+标注)',
+    maxZoom: 18,
+    subdomains: ['1', '2', '3', '4'],
+    crs: CRS.GCJ02,
+    isHybrid: true,
+  },
+  esrihybrid: {
+    name: 'Esri卫星+地名',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    labelUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri Imagery + Boundaries',
+    maxZoom: 19,
+    isHybrid: true,
+  },
 };
 
 export class MapManager {
@@ -117,6 +139,14 @@ export class MapManager {
           },
         });
         baseLayers[src.name] = new TxBayer('', opts);
+      } else if (src.isHybrid) {
+        // 混合图源：卫星底图 + 地名标注叠加
+        const satLayer = L.tileLayer(src.url, opts);
+        const labelOpts = { ...opts, maxZoom: src.maxZoom };
+        if (src.subdomains) labelOpts.subdomains = src.subdomains;
+        const labelLayer = L.tileLayer(src.labelUrl, { ...labelOpts, className: 'hybrid-labels' });
+        const hybridGroup = L.layerGroup([satLayer, labelLayer]);
+        baseLayers[src.name] = hybridGroup;
       } else {
         baseLayers[src.name] = L.tileLayer(src.url, opts);
       }
@@ -193,14 +223,16 @@ export class MapManager {
   // ---- 点位 ----
   addMarker(marker) {
     const latlng = L.latLng(marker.lat, marker.lng);
+    // 图标上显示点位名称（截断到4字符）
+    const label = (marker.name || '').slice(0, 4) || '点';
     const icon = L.divIcon({
       className: 'xb-marker',
-      html: `<div class="xb-marker-pin"><span>${(marker.group || '').charAt(0) || '点'}</span></div>`,
+      html: `<div class="xb-marker-pin"><span>${esc(label)}</span></div>`,
       iconSize: [30, 30],
       iconAnchor: [15, 30],
     });
     const m = L.marker(latlng, { icon }).addTo(this.map);
-    m.bindPopup(`<b>${marker.name}</b><br/>${marker.remark || ''}<br/><small>${marker.group || ''}</small>`);
+    m.bindPopup(`<b>${esc(marker.name)}</b><br/>${esc(marker.remark || '')}<br/><small>${esc(marker.group || '')}</small>`);
     m.on('click', () => this.onMarkerClick?.(marker.id));
     this.markers.set(marker.id, m);
     return m;

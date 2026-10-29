@@ -250,19 +250,25 @@ async function renderListPanel() {
     html = '<div class="empty-state"><div class="icon">📍</div>暂无点位和线路<br>点击工具栏添加</div>';
   } else {
     for (const [group, items] of Object.entries(grouped).sort()) {
-      html += `<div class="section-title">${group}</div>`;
+      html += `<div class="section-title">${esc(group)}</div>`;
       for (const m of items.markers) {
         html += `<div class="list-item" data-mid="${m.id}">
           <span class="item-icon">📍</span>
-          <div class="item-info"><div class="item-name">${esc(m.name)}</div><div class="item-sub">${m.remark || ''}</div></div>
-          <div class="item-actions"><button data-del-mk="${m.id}" title="删除">✕</button></div>
+          <div class="item-info"><div class="item-name">${esc(m.name)}</div><div class="item-sub">${esc(m.remark || '')}</div></div>
+          <div class="item-actions">
+            <button data-edit-mk="${m.id}" title="编辑">✎</button>
+            <button data-del-mk="${m.id}" title="删除">✕</button>
+          </div>
         </div>`;
       }
       for (const t of items.tracks) {
         html += `<div class="list-item" data-tid="${t.id}">
           <span class="item-icon">〰</span>
           <div class="item-info"><div class="item-name">${esc(t.name)}</div><div class="item-sub">${(t.points||[]).length} 个点</div></div>
-          <div class="item-actions"><button data-del-tk="${t.id}" title="删除">✕</button></div>
+          <div class="item-actions">
+            <button data-edit-tk="${t.id}" title="编辑">✎</button>
+            <button data-del-tk="${t.id}" title="删除">✕</button>
+          </div>
         </div>`;
       }
     }
@@ -293,6 +299,13 @@ async function renderListPanel() {
       autoSync();
     };
   });
+  panel.querySelectorAll('[data-edit-mk]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const m = markers.find(x => x.id === btn.dataset.editMk);
+      if (m) showEditMarkerModal(m);
+    };
+  });
   panel.querySelectorAll('[data-del-tk]').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
@@ -303,6 +316,82 @@ async function renderListPanel() {
       autoSync();
     };
   });
+  panel.querySelectorAll('[data-edit-tk]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const t = tracks.find(x => x.id === btn.dataset.editTk);
+      if (t) showEditTrackModal(t);
+    };
+  });
+}
+
+// ---- 编辑点位 ----
+async function showEditMarkerModal(marker) {
+  const groups = await getGroups();
+  const groupOpts = groups.map(g => `<option value="${g}" ${g === (marker.group || '默认') ? 'selected' : ''}>${g}</option>`).join('') + '<option value="">+ 新分组</option>';
+  const body = `
+    <div class="form-group"><label>名称</label><input class="form-input" id="edMkName" value="${esc(marker.name)}"></div>
+    <div class="form-group"><label>备注</label><textarea class="form-textarea" id="edMkRemark">${esc(marker.remark || '')}</textarea></div>
+    <div class="form-group"><label>分组</label><select class="form-select" id="edMkGroupSel">${groupOpts}</select></div>
+    <div class="form-group" id="edMkNewGroupWrap" style="display:none"><label>新分组名</label><input class="form-input" id="edMkNewGroup"></div>
+    <div class="form-group"><label>坐标 (WGS84)</label>
+      <div style="font-family:monospace;font-size:13px;color:var(--text-muted)">
+        ${marker.lng?.toFixed(6) || ''}, ${marker.lat?.toFixed(6) || ''}
+      </div>
+    </div>`;
+  const footer = `<button class="btn btn-outline" id="edMkCancel">取消</button><button class="btn btn-primary" id="edMkSave">保存</button>`;
+  const { close } = showModal('编辑点位', body, footer);
+  document.getElementById('edMkCancel').onclick = close;
+  document.getElementById('edMkGroupSel').onchange = (e) => {
+    document.getElementById('edMkNewGroupWrap').style.display = e.target.value === '' ? 'block' : 'none';
+  };
+  document.getElementById('edMkSave').onclick = async () => {
+    const name = document.getElementById('edMkName').value.trim() || '未命名点位';
+    const remark = document.getElementById('edMkRemark').value.trim();
+    const groupSel = document.getElementById('edMkGroupSel').value;
+    const newGroup = document.getElementById('edMkNewGroup').value.trim();
+    const group = groupSel || newGroup || '默认';
+    const updated = { ...marker, name, remark, group, updateAt: Date.now(), _dirty: true };
+    await localMarkers.set(updated);
+    mapMgr.updateMarker(updated);
+    close();
+    toast('点位已更新');
+    renderListPanel();
+    autoSync();
+  };
+}
+
+// ---- 编辑线路 ----
+async function showEditTrackModal(track) {
+  const groups = await getGroups();
+  const groupOpts = groups.map(g => `<option value="${g}" ${g === (track.group || '默认') ? 'selected' : ''}>${g}</option>`).join('') + '<option value="">+ 新分组</option>';
+  const body = `
+    <div class="form-group"><label>名称</label><input class="form-input" id="edTkName" value="${esc(track.name)}"></div>
+    <div class="form-group"><label>备注</label><textarea class="form-textarea" id="edTkRemark">${esc(track.remark || '')}</textarea></div>
+    <div class="form-group"><label>分组</label><select class="form-select" id="edTkGroupSel">${groupOpts}</select></div>
+    <div class="form-group" id="edTkNewGroupWrap" style="display:none"><label>新分组名</label><input class="form-input" id="edTkNewGroup"></div>
+    <div class="form-group"><label>点数</label><div style="color:var(--text-muted)">${(track.points||[]).length} 个点</div></div>`;
+  const footer = `<button class="btn btn-outline" id="edTkCancel">取消</button><button class="btn btn-primary" id="edTkSave">保存</button>`;
+  const { close } = showModal('编辑线路', body, footer);
+  document.getElementById('edTkCancel').onclick = close;
+  document.getElementById('edTkGroupSel').onchange = (e) => {
+    document.getElementById('edTkNewGroupWrap').style.display = e.target.value === '' ? 'block' : 'none';
+  };
+  document.getElementById('edTkSave').onclick = async () => {
+    const name = document.getElementById('edTkName').value.trim() || '未命名线路';
+    const remark = document.getElementById('edTkRemark').value.trim();
+    const groupSel = document.getElementById('edTkGroupSel').value;
+    const newGroup = document.getElementById('edTkNewGroup').value.trim();
+    const group = groupSel || newGroup || '默认';
+    const updated = { ...track, name, remark, group, updateAt: Date.now(), _dirty: true };
+    await localTracks.set(updated);
+    mapMgr.removeTrack(track.id);
+    mapMgr.addTrack(updated);
+    close();
+    toast('线路已更新');
+    renderListPanel();
+    autoSync();
+  };
 }
 
 // ---- 面板切换 ----
@@ -336,6 +425,7 @@ function showImportModal() {
       </select>
     </div>
     <div class="form-group"><label>选择文件</label><input type="file" id="impFile" accept=".geojson,.json,.gpx,.kml,.csv,.shp,.zip"></div>
+    <div class="form-group"><label><input type="checkbox" id="impUseFileName" checked> 用文件名作为分组</label></div>
     <div class="form-group"><label>或粘贴内容</label><textarea class="form-textarea" id="impText" style="min-height:100px"></textarea></div>`;
   const footer = `<button class="btn btn-outline" id="impCancel">取消</button><button class="btn btn-primary" id="impGo">导入</button>`;
   const { close } = showModal('导入数据', body, footer);
@@ -344,18 +434,26 @@ function showImportModal() {
     const format = document.getElementById('impFormat').value;
     const file = document.getElementById('impFile').files[0];
     const text = document.getElementById('impText').value.trim();
+    const useFileName = document.getElementById('impUseFileName').checked;
     let content = text;
     let fileBuffer = null;
+    let groupName = null;
     if (file) {
       if (format === 'shp') {
         fileBuffer = await file.arrayBuffer();
       } else {
         content = await file.text();
       }
+      if (useFileName) {
+        groupName = file.name.replace(/\.[^.]+$/, '');
+      }
+    } else if (useFileName && text) {
+      // 粘贴内容时无文件名，用格式名作为分组
+      groupName = null;
     }
     if (!content && !fileBuffer) { toast('请选择文件或粘贴内容'); return; }
     try {
-      const result = await importData(content, format, fileBuffer);
+      const result = await importData(content, format, fileBuffer, groupName);
       // 刷新地图
       for (const m of result.markers) mapMgr.addMarker(m);
       for (const t of result.tracks) mapMgr.addTrack(t);

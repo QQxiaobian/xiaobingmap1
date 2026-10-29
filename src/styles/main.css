@@ -236,7 +236,9 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
 }
 .xb-marker-pin span {
   transform: rotate(45deg);
-  color: #fff; font-size: 11px; font-weight: 700;
+  color: #fff; font-size: 9px; font-weight: 700;
+  max-width: 26px; overflow: hidden; text-align: center;
+  white-space: nowrap; text-overflow: ellipsis;
 }
 
 /* ===== 空状态 ===== */
@@ -304,3 +306,7 @@ body { background: var(--bg); color: var(--text); font-size: 14px; line-height: 
   box-shadow: var(--shadow);
   pointer-events: none;
 }
+
+/* ===== 混合图源标注层 ===== */
+.leaflet-layer.hybrid-labels { z-index: 400; }
+.leaflet-layer.hybrid-labels .leaflet-tile { background: transparent; }

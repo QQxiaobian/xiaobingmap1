@@ -165,12 +165,11 @@ export function parseKML(text) {
   const doc = parser.parseFromString(text, 'text/xml');
   const markers = [], tracks = [];
 
-  // Placemark 中的 Point
-  doc.querySelectorAll('Placemark').forEach(pm => {
+  function parsePlacemark(pm, folderGroup) {
     const name = pm.querySelector('name')?.textContent || '导入点位';
     const remark = pm.querySelector('description')?.textContent || '';
     const styleUrl = pm.querySelector('styleUrl')?.textContent || '';
-    const group = styleUrl ? styleUrl.replace(/^#/, '') : '导入';
+    const group = folderGroup || (styleUrl ? styleUrl.replace(/^#/, '') : '导入');
 
     const point = pm.querySelector('Point');
     if (point) {
@@ -217,9 +216,23 @@ export function parseKML(text) {
         }
       }
     }
-  });
+  }
 
-  // Folder/Document 中的 styleMap 名称用作分组
+  // 递归遍历 Folder，用 Folder 名作为分组
+  function walkFolder(folder, parentGroup) {
+    const folderName = folder.querySelector(':scope > name')?.textContent;
+    const group = parentGroup || folderName || '导入';
+    folder.querySelectorAll(':scope > Placemark').forEach(pm => parsePlacemark(pm, group));
+    folder.querySelectorAll(':scope > Folder').forEach(f => walkFolder(f, group));
+  }
+
+  // 顶层 Placemark
+  doc.querySelectorAll(':root > kml > Document > Placemark, :root > Document > Placemark').forEach(pm => parsePlacemark(pm, '导入'));
+  // Folder 遍历
+  doc.querySelectorAll(':root > kml > Document > Folder, :root > Document > Folder').forEach(f => walkFolder(f, null));
+  // 无 Document 包裹的 Placemark
+  doc.querySelectorAll(':root > kml > Placemark').forEach(pm => parsePlacemark(pm, '导入'));
+
   return { markers, tracks };
 }
 
@@ -246,7 +259,7 @@ export async function parseSHP(buffer) {
   return parseGeoJSON(fc);
 }
 
-export async function importData(text, format, fileBuffer) {
+export async function importData(text, format, fileBuffer, groupName) {
   let parsed;
   if (format === 'geojson') parsed = parseGeoJSON(text);
   else if (format === 'gpx') parsed = parseGPX(text);
@@ -254,6 +267,11 @@ export async function importData(text, format, fileBuffer) {
   else if (format === 'kml') parsed = parseKML(text);
   else if (format === 'shp') parsed = await parseSHP(fileBuffer);
   else throw new Error('未知格式');
+  // 用文件名覆盖分组，方便按文件管理
+  if (groupName) {
+    for (const m of parsed.markers) m.group = groupName;
+    for (const t of parsed.tracks) t.group = groupName;
+  }
   for (const m of parsed.markers) await localMarkers.set(m);
   for (const t of parsed.tracks) await localTracks.set(t);
   return parsed;
