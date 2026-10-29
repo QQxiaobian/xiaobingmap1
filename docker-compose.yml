@@ -3,13 +3,9 @@
 # 后端监听 8678 端口，仅 HTTP，由 FN Connect 提供 HTTPS
 # 数据持久化在 ./data 目录
 
-version: '3.8'
-
 services:
   xiaobingmap:
-    image: ghcr.io/qqxiaobian/xiaobingmap1:latest
-    # 如需从源码构建，取消注释下行并注释掉 image 行
-    # build: https://github.com/QQxiaobian/xiaobingmap1.git
+    build: https://github.com/QQxiaobian/xiaobingmap1.git
     container_name: xiaobingmap
     restart: unless-stopped
     ports:
