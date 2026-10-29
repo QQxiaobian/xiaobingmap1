@@ -1,0 +1,22 @@
+# 小兵地图 - 飞牛 Docker 部署配置
+# 后端监听 8678 端口，仅 HTTP，由 FN Connect 提供 HTTPS
+# 数据持久化在 ./data 目录
+
+version: '3.8'
+
+services:
+  xiaobingmap:
+    build: .
+    container_name: xiaobingmap
+    restart: unless-stopped
+    ports:
+      - "8678:8678"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=8678
+      - DB_PATH=/app/data/xiaobingmap.db
+      # 修改 JWT 密钥增强安全性
+      - JWT_SECRET=change-this-secret-in-production
+    # 不配置 SSL，由飞牛 FN Connect 处理 HTTPS
