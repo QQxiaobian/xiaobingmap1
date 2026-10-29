@@ -133,20 +133,87 @@ function parseCoordInput(input) {
 function renderSearchBox() {
   const input = document.getElementById('coordSearch');
   const btn = document.getElementById('searchGo');
-  const doSearch = () => {
+
+  const doSearch = async () => {
     const val = input.value.trim();
-    if (!val) { toast('请输入坐标'); return; }
+    if (!val) { toast('请输入坐标或名称'); return; }
+
+    // 先尝试坐标解析
     const coord = parseCoordInput(val);
-    if (!coord) {
-      toast('无法解析坐标，请输入如: 103.044,25.147');
+    if (coord) {
+      mapMgr.flyToCoord(coord.lat, coord.lng);
+      toast(`已定位到坐标: ${coord.lng.toFixed(6)}, ${coord.lat.toFixed(6)}`);
       return;
     }
-    // 如果当前是 GCJ02 图源，把输入坐标当 WGS84 处理
-    mapMgr.flyToCoord(coord.lat, coord.lng);
-    toast(`已定位: ${coord.lng.toFixed(6)}, ${coord.lat.toFixed(6)}`);
+
+    // 搜索收藏的点位和线路
+    const markers = await localMarkers.list();
+    const tracks = await localTracks.list();
+    const q = val.toLowerCase();
+    const matchMarkers = markers.filter(m =>
+      (m.name || '').toLowerCase().includes(q) ||
+      (m.remark || '').toLowerCase().includes(q) ||
+      (m.group || '').toLowerCase().includes(q)
+    );
+    const matchTracks = tracks.filter(t =>
+      (t.name || '').toLowerCase().includes(q) ||
+      (t.remark || '').toLowerCase().includes(q) ||
+      (t.group || '').toLowerCase().includes(q)
+    );
+
+    if (matchMarkers.length === 0 && matchTracks.length === 0) {
+      toast('未找到匹配的点位或线路');
+      return;
+    }
+
+    // 单个结果直接定位
+    if (matchMarkers.length === 1 && matchTracks.length === 0) {
+      mapMgr.flyToMarker(matchMarkers[0]);
+      toast(`已定位: ${matchMarkers[0].name}`);
+      return;
+    }
+    if (matchTracks.length === 1 && matchMarkers.length === 0) {
+      mapMgr.flyToTrack(matchTracks[0]);
+      toast(`已定位: ${matchTracks[0].name}`);
+      return;
+    }
+
+    // 多个结果弹出选择列表
+    showSearchResults(matchMarkers, matchTracks);
   };
+
   btn.onclick = doSearch;
   input.onkeydown = (e) => { if (e.key === 'Enter') doSearch(); };
+}
+
+function showSearchResults(markers, tracks) {
+  let body = '<div style="max-height:300px;overflow-y:auto">';
+  for (const m of markers) {
+    body += `<div class="list-item" data-srch-mk="${m.id}">
+      <span class="item-icon">📍</span>
+      <div class="item-info"><div class="item-name">${esc(m.name)}</div><div class="item-sub">${esc(m.group || '')} · ${m.lng?.toFixed(4)},${m.lat?.toFixed(4)}</div></div>
+    </div>`;
+  }
+  for (const t of tracks) {
+    body += `<div class="list-item" data-srch-tk="${t.id}">
+      <span class="item-icon">〰</span>
+      <div class="item-info"><div class="item-name">${esc(t.name)}</div><div class="item-sub">${esc(t.group || '')} · ${(t.points||[]).length} 个点</div></div>
+    </div>`;
+  }
+  body += '</div>';
+  const { close } = showModal(`搜索结果 (${markers.length + tracks.length})`, body);
+  document.querySelectorAll('[data-srch-mk]').forEach(el => {
+    el.onclick = () => {
+      const m = markers.find(x => x.id === el.dataset.srchMk);
+      if (m) { mapMgr.flyToMarker(m); close(); }
+    };
+  });
+  document.querySelectorAll('[data-srch-tk]').forEach(el => {
+    el.onclick = () => {
+      const t = tracks.find(x => x.id === el.dataset.srchTk);
+      if (t) { mapMgr.flyToTrack(t); close(); }
+    };
+  });
 }
 
 // ---- 坐标显示 ----
@@ -715,7 +782,7 @@ async function init() {
       <div class="map-container">
         <div class="toolbar"></div>
         <div class="search-box">
-          <input type="text" id="coordSearch" placeholder="搜索坐标: 经度,纬度 或 度分秒" title="输入坐标定位，如 103.044,25.147">
+          <input type="text" id="coordSearch" placeholder="搜索坐标或收藏名称..." title="输入坐标定位(如 103.044,25.147)或搜索已保存的点位/线路名称">
           <button id="searchGo" title="定位">🔍</button>
         </div>
         <div id="map"></div>

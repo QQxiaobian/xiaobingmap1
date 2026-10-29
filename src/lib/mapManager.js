@@ -197,15 +197,24 @@ export class MapManager {
   // ---- GPS 定位 ----
   locateGPS() {
     return new Promise((resolve, reject) => {
-      if (!navigator.geolocation) return reject(new Error('浏览器不支持定位'));
+      if (!navigator.geolocation) return reject(new Error('浏览器不支持定位功能'));
+      let resolved = false;
       navigator.geolocation.getCurrentPosition(
         (pos) => {
+          resolved = true;
           const latlng = L.latLng(pos.coords.latitude, pos.coords.longitude);
           this._showGPS(latlng, pos.coords.accuracy);
           resolve({ latlng, accuracy: pos.coords.accuracy });
         },
-        (err) => reject(err),
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        (err) => {
+          resolved = true;
+          let msg = '定位失败';
+          if (err.code === 1) msg = '定位权限被拒绝，请在浏览器设置中允许位置访问';
+          else if (err.code === 2) msg = '无法获取位置，请检查网络或GPS信号';
+          else if (err.code === 3) msg = '定位超时，请重试';
+          reject(new Error(msg));
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
     });
   }
