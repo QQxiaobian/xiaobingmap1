@@ -330,10 +330,12 @@ function showImportModal() {
       <select class="form-select" id="impFormat">
         <option value="geojson">GeoJSON</option>
         <option value="gpx">GPX</option>
+        <option value="kml">KML</option>
+        <option value="shp">SHP (Shapefile)</option>
         <option value="csv">CSV</option>
       </select>
     </div>
-    <div class="form-group"><label>选择文件</label><input type="file" id="impFile" accept=".geojson,.json,.gpx,.csv"></div>
+    <div class="form-group"><label>选择文件</label><input type="file" id="impFile" accept=".geojson,.json,.gpx,.kml,.csv,.shp,.zip"></div>
     <div class="form-group"><label>或粘贴内容</label><textarea class="form-textarea" id="impText" style="min-height:100px"></textarea></div>`;
   const footer = `<button class="btn btn-outline" id="impCancel">取消</button><button class="btn btn-primary" id="impGo">导入</button>`;
   const { close } = showModal('导入数据', body, footer);
@@ -343,12 +345,17 @@ function showImportModal() {
     const file = document.getElementById('impFile').files[0];
     const text = document.getElementById('impText').value.trim();
     let content = text;
+    let fileBuffer = null;
     if (file) {
-      content = await file.text();
+      if (format === 'shp') {
+        fileBuffer = await file.arrayBuffer();
+      } else {
+        content = await file.text();
+      }
     }
-    if (!content) { toast('请选择文件或粘贴内容'); return; }
+    if (!content && !fileBuffer) { toast('请选择文件或粘贴内容'); return; }
     try {
-      const result = await importData(content, format);
+      const result = await importData(content, format, fileBuffer);
       // 刷新地图
       for (const m of result.markers) mapMgr.addMarker(m);
       for (const t of result.tracks) mapMgr.addTrack(t);
@@ -369,6 +376,7 @@ function showExportModal() {
       <select class="form-select" id="expFormat">
         <option value="geojson">GeoJSON</option>
         <option value="gpx">GPX</option>
+        <option value="kml">KML</option>
         <option value="csv">CSV</option>
       </select>
     </div>
