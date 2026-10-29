@@ -25,6 +25,51 @@ const tileSources = {
     attribution: 'OpenStreetMap',
     maxZoom: 19,
   },
+  // --- 云南常用图源 ---
+  ghyx: {
+    name: '高德卫星图',
+    url: 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
+    attribution: '高德地图 AutoNavi',
+    maxZoom: 18,
+    subdomains: ['1', '2', '3', '4'],
+    crs: CRS.GCJ02,
+  },
+  gdmap: {
+    name: '高德街道图',
+    url: 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+    attribution: '高德地图 AutoNavi',
+    maxZoom: 18,
+    subdomains: ['1', '2', '3', '4'],
+    crs: CRS.GCJ02,
+  },
+  txsat: {
+    name: '腾讯卫星图',
+    url: 'https://p{s}.map.gtimg.com/sateTiles/{z}/{x}/{int y/16}/{y}/{x}_{y}.jpg',
+    attribution: '腾讯地图 Tencent',
+    maxZoom: 18,
+    subdomains: ['0', '1', '2', '3'],
+    crs: CRS.GCJ02,
+  },
+  txmap: {
+    name: '腾讯街道图',
+    url: 'https://p{s}.map.gtimg.com/realtimerender/{z}/{x}/{int y/16}/{y}/{x}_{y}.png',
+    attribution: '腾讯地图 Tencent',
+    maxZoom: 18,
+    subdomains: ['0', '1', '2', '3'],
+    crs: CRS.GCJ02,
+  },
+  ynsurvey: {
+    name: '云南测绘地形',
+    url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri Topo · 云南地形',
+    maxZoom: 17,
+  },
+  ynterrain: {
+    name: '云南地形图',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri Terrain · 云南',
+    maxZoom: 13,
+  },
 };
 
 export class MapManager {
@@ -51,10 +96,30 @@ export class MapManager {
 
     const baseLayers = {};
     for (const [key, src] of Object.entries(tileSources)) {
-      baseLayers[src.name] = L.tileLayer(src.url, {
+      const opts = {
         attribution: src.attribution,
         maxZoom: src.maxZoom,
-      });
+      };
+      if (src.subdomains) opts.subdomains = src.subdomains;
+
+      if (key.startsWith('tx')) {
+        // 腾讯地图：自定义 URL 构造，瓦片分块目录 {int y/16}
+        const TxBayer = L.TileLayer.extend({
+          getTileUrl(coords) {
+            const z = coords.z;
+            const x = coords.x;
+            const y = (1 << z) - 1 - coords.y; // 腾讯 Y 轴翻转
+            const group = Math.floor(y / 16);
+            const subs = ['0', '1', '2', '3'];
+            const s = subs[Math.abs(x + y) % subs.length];
+            const ext = src.url.endsWith('.jpg') ? '.jpg' : '.png';
+            return `https://p${s}.map.gtimg.com/${src.url.includes('sateTiles') ? 'sateTiles' : 'realtimerender'}/${z}/${Math.floor(x / 16)}/${x}/${group}/${y}/${x}_${y}${ext}`;
+          },
+        });
+        baseLayers[src.name] = new TxBayer('', opts);
+      } else {
+        baseLayers[src.name] = L.tileLayer(src.url, opts);
+      }
     }
 
     this.map = L.map(this.container, {
