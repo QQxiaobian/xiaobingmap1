@@ -621,15 +621,21 @@ function showAuthModal() {
   const { close } = showModal('账号', body, footer);
   document.getElementById('authCancel').onclick = close;
   const errEl = document.getElementById('authError');
+  const onAuthSuccess = async () => {
+    close();
+    hideLoginGate();
+    toast('登录成功');
+    renderTopbar();
+    await doSync();
+    await loadAndRenderAll();
+    if (isAdmin()) addAdminButton();
+  };
   document.getElementById('authLogin').onclick = async () => {
     const u = document.getElementById('authUser').value.trim();
     const p = document.getElementById('authPass').value;
     try {
       await login(u, p);
-      close();
-      toast('登录成功');
-      renderTopbar();
-      await loadAndRenderAll();
+      await onAuthSuccess();
     } catch (e) {
       errEl.textContent = e.message; errEl.style.display = 'block';
     }
@@ -639,14 +645,82 @@ function showAuthModal() {
     const p = document.getElementById('authPass').value;
     try {
       await register(u, p);
-      close();
-      toast('注册成功');
-      renderTopbar();
-      await loadAndRenderAll();
+      await onAuthSuccess();
     } catch (e) {
       errEl.textContent = e.message; errEl.style.display = 'block';
     }
   };
+}
+
+// ---- 登录拦截 ----
+function showLoginGate() {
+  let gate = document.getElementById('loginGate');
+  if (gate) return;
+  gate = document.createElement('div');
+  gate.id = 'loginGate';
+  gate.className = 'login-gate';
+  gate.innerHTML = `
+    <div class="login-gate-card">
+      <div class="login-gate-logo">小兵地图</div>
+      <p class="login-gate-hint">请登录后使用</p>
+      <div class="form-group"><label>用户名</label><input class="form-input" id="gateUser" placeholder="用户名"></div>
+      <div class="form-group"><label>密码</label><input class="form-input" id="gatePass" type="password" placeholder="密码"></div>
+      <p id="gateError" style="color:var(--error);font-size:13px;display:none"></p>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn btn-primary btn-block" id="gateLogin">登录</button>
+        <button class="btn btn-success btn-block" id="gateRegister">注册</button>
+      </div>
+    </div>`;
+  document.body.appendChild(gate);
+  const errEl = document.getElementById('gateError');
+  const onAuthSuccess = async () => {
+    hideLoginGate();
+    toast('登录成功');
+    renderTopbar();
+    await doSync();
+    await loadAndRenderAll();
+    if (isAdmin()) addAdminButton();
+  };
+  document.getElementById('gateLogin').onclick = async () => {
+    const u = document.getElementById('gateUser').value.trim();
+    const p = document.getElementById('gatePass').value;
+    try {
+      await login(u, p);
+      await onAuthSuccess();
+    } catch (e) {
+      errEl.textContent = e.message; errEl.style.display = 'block';
+    }
+  };
+  document.getElementById('gateRegister').onclick = async () => {
+    const u = document.getElementById('gateUser').value.trim();
+    const p = document.getElementById('gatePass').value;
+    try {
+      await register(u, p);
+      await onAuthSuccess();
+    } catch (e) {
+      errEl.textContent = e.message; errEl.style.display = 'block';
+    }
+  };
+  document.getElementById('gatePass').onkeydown = (e) => {
+    if (e.key === 'Enter') document.getElementById('gateLogin').click();
+  };
+  setTimeout(() => document.getElementById('gateUser')?.focus(), 100);
+}
+
+function hideLoginGate() {
+  const gate = document.getElementById('loginGate');
+  if (gate) gate.remove();
+}
+
+function addAdminButton() {
+  if (document.getElementById('btnAdmin')) return;
+  const btn = document.createElement('button');
+  btn.className = 'btn-icon';
+  btn.id = 'btnAdmin';
+  btn.title = '管理后台';
+  btn.textContent = '★';
+  btn.onclick = () => togglePanel('admin');
+  document.querySelector('.topbar').insertBefore(btn, document.getElementById('btnAuth'));
 }
 
 async function doLogout() {
@@ -655,6 +729,13 @@ async function doLogout() {
   renderTopbar();
   mapMgr.clearMarkers();
   mapMgr.clearTracks();
+  const adminBtn = document.getElementById('btnAdmin');
+  if (adminBtn) adminBtn.remove();
+  if (currentPanel) {
+    document.querySelector('.side-panel').classList.remove('open');
+    currentPanel = null;
+  }
+  showLoginGate();
 }
 
 // ---- 同步 ----
@@ -826,25 +907,17 @@ async function init() {
   await initAuth();
   renderTopbar();
 
-  // 等地图就绪
-  setTimeout(async () => {
-    mapMgr.invalidateSize();
-    if (isLoggedIn()) {
+  if (!isLoggedIn()) {
+    // 未登录：显示登录拦截，不加载任何数据
+    showLoginGate();
+  } else {
+    // 已登录：正常进入
+    setTimeout(async () => {
+      mapMgr.invalidateSize();
       await doSync();
-    }
-    await loadAndRenderAll();
-  }, 300);
-
-  // 管理员入口
-  if (isAdmin()) {
-    setTimeout(() => {
-      const btn = document.createElement('button');
-      btn.className = 'btn-icon';
-      btn.title = '管理后台';
-      btn.textContent = '★';
-      btn.onclick = () => togglePanel('admin');
-      document.querySelector('.topbar').insertBefore(btn, document.getElementById('btnAuth'));
-    }, 100);
+      await loadAndRenderAll();
+    }, 300);
+    if (isAdmin()) addAdminButton();
   }
 }
 
