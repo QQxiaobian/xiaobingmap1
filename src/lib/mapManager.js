@@ -1,4 +1,5 @@
 // 地图管理器：Leaflet 实例、图源切换、GPS定位、打点、绘制、测量
+// 关键：所有坐标在内部以 WGS84 存储/渲染，GCJ02 图源显示时做偏移补偿
 import L from 'leaflet';
 import 'leaflet-draw';
 import { wgs84ToGcj02, gcj02ToWgs84, CRS } from './coord.js';
@@ -16,20 +17,48 @@ L.Icon.Default.mergeOptions({
   shadowUrl: '/leaflet/marker-shadow.png',
 });
 
+// 图源定义
+// crs 字段标识该图源使用哪种坐标系：WGS84 图源直接用，GCJ02 图源需要偏移补偿
 const tileSources = {
+  // --- WGS84 图源（国际标准，无偏移）---
   esri: {
     name: 'Esri 卫星图',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Esri World Imagery',
     maxZoom: 19,
+    crs: CRS.WGS84,
+  },
+  esrihybrid: {
+    name: 'Esri卫星+地名',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    labelUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri Imagery + Boundaries',
+    maxZoom: 19,
+    crs: CRS.WGS84,
+    isHybrid: true,
   },
   osm: {
     name: 'OSM 街道图',
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: 'OpenStreetMap',
     maxZoom: 19,
+    crs: CRS.WGS84,
   },
-  // --- 云南常用图源 ---
+  esritopo: {
+    name: 'Esri 地形图',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri Topo',
+    maxZoom: 17,
+    crs: CRS.WGS84,
+  },
+  esriterrain: {
+    name: 'Esri 地形渲染',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri Terrain',
+    maxZoom: 13,
+    crs: CRS.WGS84,
+  },
+  // --- GCJ02 图源（中国偏移坐标系，需补偿）---
   ghyx: {
     name: '高德卫星图',
     url: 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
@@ -37,42 +66,6 @@ const tileSources = {
     maxZoom: 18,
     subdomains: ['1', '2', '3', '4'],
     crs: CRS.GCJ02,
-  },
-  gdmap: {
-    name: '高德街道图',
-    url: 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
-    attribution: '高德地图 AutoNavi',
-    maxZoom: 18,
-    subdomains: ['1', '2', '3', '4'],
-    crs: CRS.GCJ02,
-  },
-  txsat: {
-    name: '腾讯卫星图',
-    url: 'https://p{s}.map.gtimg.com/sateTiles/{z}/{x}/{int y/16}/{y}/{x}_{y}.jpg',
-    attribution: '腾讯地图 Tencent',
-    maxZoom: 18,
-    subdomains: ['0', '1', '2', '3'],
-    crs: CRS.GCJ02,
-  },
-  txmap: {
-    name: '腾讯街道图',
-    url: 'https://p{s}.map.gtimg.com/realtimerender/{z}/{x}/{int y/16}/{y}/{x}_{y}.png',
-    attribution: '腾讯地图 Tencent',
-    maxZoom: 18,
-    subdomains: ['0', '1', '2', '3'],
-    crs: CRS.GCJ02,
-  },
-  ynsurvey: {
-    name: '云南测绘地形',
-    url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Esri Topo · 云南地形',
-    maxZoom: 17,
-  },
-  ynterrain: {
-    name: '云南地形图',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Esri Terrain · 云南',
-    maxZoom: 13,
   },
   ghybrid: {
     name: '高德卫星+地名',
@@ -84,30 +77,50 @@ const tileSources = {
     crs: CRS.GCJ02,
     isHybrid: true,
   },
-  esrihybrid: {
-    name: 'Esri卫星+地名',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    labelUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Esri Imagery + Boundaries',
-    maxZoom: 19,
-    isHybrid: true,
+  gdmap: {
+    name: '高德街道图',
+    url: 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+    attribution: '高德地图 AutoNavi',
+    maxZoom: 18,
+    subdomains: ['1', '2', '3', '4'],
+    crs: CRS.GCJ02,
+  },
+  txsat: {
+    name: '腾讯卫星图',
+    url: 'https://p{s}.map.gtimg.com/sateTiles/{z}/{x}/{y}/{x}_{y}.jpg',
+    attribution: '腾讯地图 Tencent',
+    maxZoom: 18,
+    subdomains: ['0', '1', '2', '3'],
+    crs: CRS.GCJ02,
+    isTencent: true,
+  },
+  txmap: {
+    name: '腾讯街道图',
+    url: 'https://p{s}.map.gtimg.com/realtimerender/{z}/{x}/{y}/{x}_{y}.png',
+    attribution: '腾讯地图 Tencent',
+    maxZoom: 18,
+    subdomains: ['0', '1', '2', '3'],
+    crs: CRS.GCJ02,
+    isTencent: true,
   },
 };
+
+// 当前激活图层的 CRS
+let activeLayerCRS = CRS.WGS84;
 
 export class MapManager {
   constructor(container) {
     this.container = container;
-    this.markers = new Map(); // id -> L.marker
-    this.tracks = new Map(); // id -> L.polyline
+    this.markers = new Map();
+    this.tracks = new Map();
     this.onMarkerClick = null;
     this.onTrackClick = null;
     this.onMapClick = null;
     this._drawnItems = null;
     this._drawHandler = null;
-    this._measureLayer = null;
     this._gpsMarker = null;
     this._gpsCircle = null;
-    this.currentCRS = CRS.WGS84;
+    this.currentCRS = CRS.WGS84; // 显示坐标格式
     this._init();
   }
 
@@ -124,31 +137,42 @@ export class MapManager {
       };
       if (src.subdomains) opts.subdomains = src.subdomains;
 
-      if (key.startsWith('tx')) {
-        // 腾讯地图：自定义 URL 构造，瓦片分块目录 {int y/16}
+      let layer;
+      if (src.isTencent) {
+        // 腾讯地图：Y 轴翻转 + 瓦片分块
         const TxBayer = L.TileLayer.extend({
           getTileUrl(coords) {
             const z = coords.z;
             const x = coords.x;
-            const y = (1 << z) - 1 - coords.y; // 腾讯 Y 轴翻转
+            const y = (1 << z) - 1 - coords.y;
             const group = Math.floor(y / 16);
-            const subs = ['0', '1', '2', '3'];
+            const xGroup = Math.floor(x / 16);
+            const subs = src.subdomains;
             const s = subs[Math.abs(x + y) % subs.length];
             const ext = src.url.endsWith('.jpg') ? '.jpg' : '.png';
-            return `https://p${s}.map.gtimg.com/${src.url.includes('sateTiles') ? 'sateTiles' : 'realtimerender'}/${z}/${Math.floor(x / 16)}/${x}/${group}/${y}/${x}_${y}${ext}`;
+            const path = src.url.includes('sateTiles') ? 'sateTiles' : 'realtimerender';
+            return `https://p${s}.map.gtimg.com/${path}/${z}/${xGroup}/${x}/${group}/${y}/${x}_${y}${ext}`;
           },
         });
-        baseLayers[src.name] = new TxBayer('', opts);
+        layer = new TxBayer('', opts);
       } else if (src.isHybrid) {
-        // 混合图源：卫星底图 + 地名标注叠加
         const satLayer = L.tileLayer(src.url, opts);
         const labelOpts = { ...opts, maxZoom: src.maxZoom };
         if (src.subdomains) labelOpts.subdomains = src.subdomains;
         const labelLayer = L.tileLayer(src.labelUrl, { ...labelOpts, className: 'hybrid-labels' });
-        const hybridGroup = L.layerGroup([satLayer, labelLayer]);
-        baseLayers[src.name] = hybridGroup;
+        layer = L.layerGroup([satLayer, labelLayer]);
       } else {
-        baseLayers[src.name] = L.tileLayer(src.url, opts);
+        layer = L.tileLayer(src.url, opts);
+      }
+
+      baseLayers[src.name] = layer;
+
+      // 记录当前图层的 CRS
+      if (key === defaultLayer) {
+        activeLayerCRS = src.crs;
+        layer.on('add', () => { activeLayerCRS = src.crs; });
+      } else {
+        layer.on('add', () => { activeLayerCRS = src.crs; this._reprojectOverlays(); });
       }
     }
 
@@ -163,7 +187,6 @@ export class MapManager {
     L.control.zoom({ position: 'bottomright' }).addTo(this.map);
     L.control.scale({ imperial: false }).addTo(this.map);
 
-    // 可绘制图层
     this._drawnItems = new L.FeatureGroup();
     this.map.addLayer(this._drawnItems);
 
@@ -172,7 +195,30 @@ export class MapManager {
     });
   }
 
-  // 坐标显示转换：Leaflet 内部始终用 WGS84，显示时按需转 GCJ02
+  // 当前图层是否为 GCJ02
+  _isGCJ02Layer() {
+    return activeLayerCRS === CRS.GCJ02;
+  }
+
+  // 将 WGS84 经纬度转换为当前图层坐标系（用于在 GCJ02 图层上正确显示）
+  _toLayer(latlng) {
+    if (this._isGCJ02Layer()) {
+      const [lng, lat] = wgs84ToGcj02(latlng.lng, latlng.lat);
+      return L.latLng(lat, lng);
+    }
+    return latlng;
+  }
+
+  // 将图层上的点击坐标转回 WGS84（用于存储）
+  _fromLayer(latlng) {
+    if (this._isGCJ02Layer()) {
+      const [lng, lat] = gcj02ToWgs84(latlng.lng, latlng.lat);
+      return L.latLng(lat, lng);
+    }
+    return latlng;
+  }
+
+  // 坐标显示转换
   _toDisplay(latlng) {
     if (this.currentCRS === CRS.GCJ02) {
       const [lng, lat] = wgs84ToGcj02(latlng.lng, latlng.lat);
@@ -181,7 +227,6 @@ export class MapManager {
     return latlng;
   }
 
-  // 从显示坐标转回 WGS84（用于存储）
   _fromDisplay(latlng) {
     if (this.currentCRS === CRS.GCJ02) {
       const [lng, lat] = gcj02ToWgs84(latlng.lng, latlng.lat);
@@ -194,20 +239,37 @@ export class MapManager {
     this.currentCRS = crs;
   }
 
+  // 切换图层后重新投影所有叠加物（点位/线路）
+  _reprojectOverlays() {
+    const markerData = [...this.markers.entries()].map(([id, m]) => ({
+      id,
+      data: m._xbData,
+    }));
+    const trackData = [...this.tracks.entries()].map(([id, t]) => ({
+      id,
+      data: t._xbData,
+    }));
+    this.clearMarkers();
+    this.clearTracks();
+    for (const { id, data } of markerData) {
+      if (data) this.addMarker(data);
+    }
+    for (const { id, data } of trackData) {
+      if (data) this.addTrack(data);
+    }
+  }
+
   // ---- GPS 定位 ----
   locateGPS() {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) return reject(new Error('浏览器不支持定位功能'));
-      let resolved = false;
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          resolved = true;
-          const latlng = L.latLng(pos.coords.latitude, pos.coords.longitude);
-          this._showGPS(latlng, pos.coords.accuracy);
-          resolve({ latlng, accuracy: pos.coords.accuracy });
+          const wgs84 = L.latLng(pos.coords.latitude, pos.coords.longitude);
+          this._showGPS(wgs84, pos.coords.accuracy);
+          resolve({ latlng: wgs84, accuracy: pos.coords.accuracy });
         },
         (err) => {
-          resolved = true;
           let msg = '定位失败';
           if (err.code === 1) msg = '定位权限被拒绝，请在浏览器设置中允许位置访问';
           else if (err.code === 2) msg = '无法获取位置，请检查网络或GPS信号';
@@ -219,19 +281,21 @@ export class MapManager {
     });
   }
 
-  _showGPS(latlng, accuracy) {
+  _showGPS(wgs84, accuracy) {
+    const pos = this._toLayer(wgs84);
     if (this._gpsMarker) this.map.removeLayer(this._gpsMarker);
     if (this._gpsCircle) this.map.removeLayer(this._gpsCircle);
-    this._gpsMarker = L.circleMarker(latlng, { radius: 8, color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.8 }).addTo(this.map);
+    this._gpsMarker = L.circleMarker(pos, { radius: 8, color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.8 }).addTo(this.map);
     if (accuracy) {
-      this._gpsCircle = L.circle(latlng, { radius: accuracy, color: '#3b82f6', fillOpacity: 0.1 }).addTo(this.map);
+      this._gpsCircle = L.circle(pos, { radius: accuracy, color: '#3b82f6', fillOpacity: 0.1 }).addTo(this.map);
     }
-    this.map.setView(latlng, 16);
+    this.map.setView(pos, 16);
   }
 
   // ---- 点位 ----
   addMarker(marker) {
-    const latlng = L.latLng(marker.lat, marker.lng);
+    const wgs84 = L.latLng(marker.lat, marker.lng);
+    const pos = this._toLayer(wgs84);
     const name = marker.name || '点位';
     const icon = L.divIcon({
       className: 'xb-marker',
@@ -239,9 +303,10 @@ export class MapManager {
       iconSize: [24, 24],
       iconAnchor: [12, 24],
     });
-    const m = L.marker(latlng, { icon }).addTo(this.map);
-    m.bindPopup(`<b>${esc(marker.name)}</b><br/>${esc(marker.remark || '')}<br/><small>${esc(marker.group || '')}</small>`);
+    const m = L.marker(pos, { icon }).addTo(this.map);
+    m.bindPopup(`<b>${esc(marker.name)}</b><br/>${esc(marker.remark || '')}`);
     m.on('click', () => this.onMarkerClick?.(marker.id));
+    m._xbData = marker;
     this.markers.set(marker.id, m);
     return m;
   }
@@ -268,19 +333,20 @@ export class MapManager {
 
   // ---- 线路 ----
   addTrack(track) {
-    const pts = (track.points || []).map(p => L.latLng(p[1], p[0]));
+    const pts = (track.points || []).map(p => this._toLayer(L.latLng(p[1], p[0])));
     if (pts.length < 1) return;
-    // 单点线路也显示为一个圆点
     if (pts.length === 1) {
       const dot = L.circleMarker(pts[0], { radius: 5, color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.8 }).addTo(this.map);
       dot.bindPopup(`<b>${esc(track.name)}</b><br/>${esc(track.remark || '')}`);
       dot.on('click', () => this.onTrackClick?.(track.id));
+      dot._xbData = track;
       this.tracks.set(track.id, dot);
       return dot;
     }
     const line = L.polyline(pts, { color: '#2563eb', weight: 3 }).addTo(this.map);
     line.bindPopup(`<b>${esc(track.name)}</b><br/>${esc(track.remark || '')}`);
     line.on('click', () => this.onTrackClick?.(track.id));
+    line._xbData = track;
     this.tracks.set(track.id, line);
     return line;
   }
@@ -288,22 +354,6 @@ export class MapManager {
   removeTrack(id) {
     const t = this.tracks.get(id);
     if (t) { this.map.removeLayer(t); this.tracks.delete(id); }
-  }
-
-  // ---- 坐标搜索定位 ----
-  flyToCoord(lat, lng, zoom = 16) {
-    const latlng = L.latLng(lat, lng);
-    this.map.setView(latlng, zoom);
-    // 临时标记
-    if (this._searchMarker) this.map.removeLayer(this._searchMarker);
-    this._searchMarker = L.circleMarker(latlng, {
-      radius: 10, color: '#dc2626', fillColor: '#f87171', fillOpacity: 0.6, weight: 2,
-    }).addTo(this.map);
-    this._searchMarker.bindPopup(`<b>搜索定位</b><br/>${lng.toFixed(6)}, ${lat.toFixed(6)}`).openPopup();
-    // 5秒后自动移除
-    setTimeout(() => {
-      if (this._searchMarker) { this.map.removeLayer(this._searchMarker); this._searchMarker = null; }
-    }, 8000);
   }
 
   clearTracks() {
@@ -319,6 +369,22 @@ export class MapManager {
     }
   }
 
+  // ---- 坐标搜索定位 ----
+  flyToCoord(lat, lng, zoom = 16) {
+    // 输入坐标按当前显示CRS处理，转WGS84后再显示
+    const wgs84 = this._fromDisplay(L.latLng(lat, lng));
+    const pos = this._toLayer(wgs84);
+    this.map.setView(pos, zoom);
+    if (this._searchMarker) this.map.removeLayer(this._searchMarker);
+    this._searchMarker = L.circleMarker(pos, {
+      radius: 10, color: '#dc2626', fillColor: '#f87171', fillOpacity: 0.6, weight: 2,
+    }).addTo(this.map);
+    this._searchMarker.bindPopup(`<b>搜索定位</b><br/>${lng.toFixed(6)}, ${lat.toFixed(6)}`).openPopup();
+    setTimeout(() => {
+      if (this._searchMarker) { this.map.removeLayer(this._searchMarker); this._searchMarker = null; }
+    }, 8000);
+  }
+
   // ---- 绘制线路 ----
   enableDrawTrack(callback) {
     this.disableDraw();
@@ -327,13 +393,17 @@ export class MapManager {
     this._drawHandler = handler;
     this.map.once(L.Draw.Event.CREATED, (e) => {
       const layer = e.layer;
-      const pts = layer.getLatLngs().map(ll => [ll.lng, ll.lat]);
+      // 绘制坐标在图层CRS下，转回WGS84存储
+      const pts = layer.getLatLngs().map(ll => {
+        const wgs84 = this._fromLayer(ll);
+        return [wgs84.lng, wgs84.lat];
+      });
       this._drawnItems.addLayer(layer);
       callback(pts);
     });
   }
 
-  // ---- 多点测距 ----
+  // ---- 测距 ----
   enableMeasureDistance(callback) {
     this.disableDraw();
     const handler = new L.Draw.Polyline(this.map, { shapeOptions: { color: '#f59e0b', weight: 3, dashArray: '8,4' } });
@@ -344,6 +414,7 @@ export class MapManager {
       const latlngs = layer.getLatLngs();
       let dist = 0;
       for (let i = 1; i < latlngs.length; i++) {
+        // 测距用图层坐标即可（偏移对距离影响极小）
         dist += latlngs[i - 1].distanceTo(latlngs[i]);
       }
       layer.bindTooltip(`总距离: ${(dist / 1000).toFixed(2)} km`, { permanent: true });
@@ -362,7 +433,6 @@ export class MapManager {
       const layer = e.layer;
       const latlngs = layer.getLatLngs()[0];
       let area = 0;
-      // Shoelace on projected coords using simple equirectangular approx
       const R = 6371000;
       const toRad = (d) => d * Math.PI / 180;
       if (latlngs.length > 2) {

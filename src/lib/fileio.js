@@ -1,11 +1,10 @@
 // 文件导入导出：GPX / GeoJSON / CSV / KML / SHP
 // 支持点位(marker)与线路(track)双向
-
-import { localMarkers, localTracks } from './storage.js';
 import shp from 'shpjs';
+import { markers as markersDB, tracks as tracksDB } from './storage.js';
 
-const uid = () => 'loc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-const now = () => Date.now();
+const uid = () => crypto.randomUUID();
+const now = () => new Date().toISOString();
 
 // ===== GeoJSON =====
 export function toGeoJSON(markers, tracks) {
@@ -14,7 +13,7 @@ export function toGeoJSON(markers, tracks) {
     features.push({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [m.lng, m.lat] },
-      properties: { name: m.name, remark: m.remark, group: m.group, type: 'marker', id: m.id },
+      properties: { name: m.name, remark: m.remark, type: 'marker', id: m.id },
     });
   }
   for (const t of tracks) {
@@ -22,7 +21,7 @@ export function toGeoJSON(markers, tracks) {
     features.push({
       type: 'Feature',
       geometry: { type: 'LineString', coordinates: coords },
-      properties: { name: t.name, remark: t.remark, group: t.group, type: 'track', id: t.id },
+      properties: { name: t.name, remark: t.remark, type: 'track', id: t.id },
     });
   }
   return { type: 'FeatureCollection', features };
@@ -38,22 +37,19 @@ export function parseGeoJSON(json) {
     if (geom.type === 'Point') {
       const [lng, lat] = geom.coordinates;
       markers.push({
-        id: uid(), name: props.name || '导入点位', remark: props.remark || '',
-        group: props.group || '导入', lat, lng, updateAt: now(), _dirty: true,
+        name: props.name || '导入点位', remark: props.remark || '', lat, lng,
       });
     } else if (geom.type === 'LineString') {
       tracks.push({
-        id: uid(), name: props.name || '导入线路', remark: props.remark || '',
-        group: props.group || '导入',
-        points: geom.coordinates, updateAt: now(), _dirty: true,
+        name: props.name || '导入线路', remark: props.remark || '',
+        points: geom.coordinates,
       });
     } else if (geom.type === 'MultiLineString') {
       for (const line of geom.coordinates) {
         if (line.length) {
           tracks.push({
-            id: uid(), name: props.name || '导入线路', remark: props.remark || '',
-            group: props.group || '导入',
-            points: line, updateAt: now(), _dirty: true,
+            name: props.name || '导入线路', remark: props.remark || '',
+            points: line,
           });
         }
       }
@@ -61,9 +57,8 @@ export function parseGeoJSON(json) {
       const outer = geom.coordinates[0];
       if (outer && outer.length) {
         tracks.push({
-          id: uid(), name: props.name || '导入区域', remark: props.remark || '',
-          group: props.group || '导入',
-          points: outer, updateAt: now(), _dirty: true,
+          name: props.name || '导入区域', remark: props.remark || '',
+          points: outer,
         });
       }
     } else if (geom.type === 'MultiPolygon') {
@@ -71,17 +66,15 @@ export function parseGeoJSON(json) {
         const outer = poly[0];
         if (outer && outer.length) {
           tracks.push({
-            id: uid(), name: props.name || '导入区域', remark: props.remark || '',
-            group: props.group || '导入',
-            points: outer, updateAt: now(), _dirty: true,
+            name: props.name || '导入区域', remark: props.remark || '',
+            points: outer,
           });
         }
       }
     } else if (geom.type === 'MultiPoint') {
       for (const [lng, lat] of geom.coordinates) {
         markers.push({
-          id: uid(), name: props.name || '导入点位', remark: props.remark || '',
-          group: props.group || '导入', lat, lng, updateAt: now(), _dirty: true,
+          name: props.name || '导入点位', remark: props.remark || '', lat, lng,
         });
       }
     }
@@ -113,13 +106,11 @@ export function parseGPX(text) {
   const wpts = doc.querySelectorAll('wpt');
   wpts.forEach(w => {
     markers.push({
-      id: uid(), name: w.querySelector('name')?.textContent || '导入点位',
+      name: w.querySelector('name')?.textContent || '导入点位',
       remark: w.querySelector('desc')?.textContent || '',
-      group: '导入', lat: parseFloat(w.getAttribute('lat')), lng: parseFloat(w.getAttribute('lon')),
-      updateAt: now(), _dirty: true,
+      lat: parseFloat(w.getAttribute('lat')), lng: parseFloat(w.getAttribute('lon')),
     });
   });
-  // trk 轨迹
   const trks = doc.querySelectorAll('trk');
   trks.forEach(trk => {
     const points = [];
@@ -128,12 +119,11 @@ export function parseGPX(text) {
     });
     if (points.length) {
       tracks.push({
-        id: uid(), name: trk.querySelector('name')?.textContent || '导入线路',
-        remark: '', group: '导入', points, updateAt: now(), _dirty: true,
+        name: trk.querySelector('name')?.textContent || '导入线路',
+        remark: '', points,
       });
     }
   });
-  // rte 路线
   const rtes = doc.querySelectorAll('rte');
   rtes.forEach(rte => {
     const points = [];
@@ -142,8 +132,8 @@ export function parseGPX(text) {
     });
     if (points.length) {
       tracks.push({
-        id: uid(), name: rte.querySelector('name')?.textContent || '导入路线',
-        remark: '', group: '导入', points, updateAt: now(), _dirty: true,
+        name: rte.querySelector('name')?.textContent || '导入路线',
+        remark: '', points,
       });
     }
   });
@@ -151,15 +141,14 @@ export function parseGPX(text) {
 }
 
 // ===== CSV =====
-// 格式: type,name,remark,group,lat,lng 或 type,name,remark,group,points
 export function toCSV(markers, tracks) {
   let csv = 'type,name,remark,group,lat,lng,points\n';
   for (const m of markers) {
-    csv += `marker,${csvEsc(m.name)},${csvEsc(m.remark)},${csvEsc(m.group)},${m.lat},${m.lng},\n`;
+    csv += `marker,${csvEsc(m.name)},${csvEsc(m.remark)},${csvEsc(m.group || '')},${m.lat},${m.lng},\n`;
   }
   for (const t of tracks) {
     const pts = (t.points || []).map(p => `${p[0]},${p[1]}`).join(';');
-    csv += `track,${csvEsc(t.name)},${csvEsc(t.remark)},${csvEsc(t.group)},,,${pts}\n`;
+    csv += `track,${csvEsc(t.name)},${csvEsc(t.remark)},${csvEsc(t.group || '')},,,${pts}\n`;
   }
   return csv;
 }
@@ -170,11 +159,11 @@ export function parseCSV(text) {
   for (let i = 1; i < lines.length; i++) {
     const cols = parseCSVLine(lines[i]);
     if (cols.length < 6) continue;
-    const [type, name, remark, group, lat, lng, pointsStr] = cols;
+    const [type, name, remark, _group, lat, lng, pointsStr] = cols;
     if (type === 'marker' && lat && lng) {
       markers.push({
-        id: uid(), name: name || '导入点位', remark: remark || '', group: group || '导入',
-        lat: parseFloat(lat), lng: parseFloat(lng), updateAt: now(), _dirty: true,
+        name: name || '导入点位', remark: remark || '',
+        lat: parseFloat(lat), lng: parseFloat(lng),
       });
     } else if (type === 'track' && pointsStr) {
       const points = pointsStr.split(';').filter(s => s).map(s => {
@@ -182,10 +171,7 @@ export function parseCSV(text) {
         return [parseFloat(plng), parseFloat(plat)];
       });
       if (points.length) {
-        tracks.push({
-          id: uid(), name: name || '导入线路', remark: remark || '', group: group || '导入',
-          points, updateAt: now(), _dirty: true,
-        });
+        tracks.push({ name: name || '导入线路', remark: remark || '', points });
       }
     }
   }
@@ -219,25 +205,19 @@ export function parseKML(text) {
   const doc = parser.parseFromString(text, 'text/xml');
   const markers = [], tracks = [];
 
-  function parsePlacemark(pm, folderGroup) {
+  function parsePlacemark(pm, folderName) {
     const name = pm.querySelector('name')?.textContent || '导入点位';
     const remark = pm.querySelector('description')?.textContent || '';
-    const styleUrl = pm.querySelector('styleUrl')?.textContent || '';
-    const group = folderGroup || (styleUrl ? styleUrl.replace(/^#/, '') : '导入');
-
     const point = pm.querySelector('Point');
     if (point) {
       const coords = point.querySelector('coordinates')?.textContent.trim();
       if (coords) {
         const [lng, lat] = coords.split(',').map(parseFloat);
         if (!isNaN(lng) && !isNaN(lat)) {
-          markers.push({
-            id: uid(), name, remark, group, lat, lng, updateAt: now(), _dirty: true,
-          });
+          markers.push({ name, remark, lat, lng, folderName });
         }
       }
     }
-
     const line = pm.querySelector('LineString');
     if (line) {
       const coordsText = line.querySelector('coordinates')?.textContent.trim();
@@ -247,14 +227,10 @@ export function parseKML(text) {
           return [lng, lat];
         });
         if (points.length) {
-          tracks.push({
-            id: uid(), name, remark, group, points, updateAt: now(), _dirty: true,
-          });
+          tracks.push({ name, remark, points, folderName });
         }
       }
     }
-
-    // Polygon 转为闭合线路
     const polygon = pm.querySelector('Polygon');
     if (polygon) {
       const outer = polygon.querySelector('outerBoundaryIs coordinates')?.textContent.trim();
@@ -264,28 +240,22 @@ export function parseKML(text) {
           return [lng, lat];
         });
         if (points.length > 2) {
-          tracks.push({
-            id: uid(), name, remark, group, points, updateAt: now(), _dirty: true,
-          });
+          tracks.push({ name, remark, points, folderName });
         }
       }
     }
   }
 
-  // 递归遍历 Folder，用 Folder 名作为分组
-  function walkFolder(folder, parentGroup) {
+  function walkFolder(folder, parentName) {
     const folderName = folder.querySelector(':scope > name')?.textContent;
-    const group = parentGroup || folderName || '导入';
-    folder.querySelectorAll(':scope > Placemark').forEach(pm => parsePlacemark(pm, group));
-    folder.querySelectorAll(':scope > Folder').forEach(f => walkFolder(f, group));
+    const name = parentName || folderName;
+    folder.querySelectorAll(':scope > Placemark').forEach(pm => parsePlacemark(pm, name));
+    folder.querySelectorAll(':scope > Folder').forEach(f => walkFolder(f, name));
   }
 
-  // 顶层 Placemark
-  doc.querySelectorAll(':root > kml > Document > Placemark, :root > Document > Placemark').forEach(pm => parsePlacemark(pm, '导入'));
-  // Folder 遍历
+  doc.querySelectorAll(':root > kml > Document > Placemark, :root > Document > Placemark').forEach(pm => parsePlacemark(pm, null));
   doc.querySelectorAll(':root > kml > Document > Folder, :root > Document > Folder').forEach(f => walkFolder(f, null));
-  // 无 Document 包裹的 Placemark
-  doc.querySelectorAll(':root > kml > Placemark').forEach(pm => parsePlacemark(pm, '导入'));
+  doc.querySelectorAll(':root > kml > Placemark').forEach(pm => parsePlacemark(pm, null));
 
   return { markers, tracks };
 }
@@ -305,15 +275,14 @@ export function toKML(markers, tracks) {
 }
 
 // ===== SHP =====
-// shpjs 可接受 ArrayBuffer 或 URL，返回 GeoJSON
 export async function parseSHP(buffer) {
   const geojson = await shp(buffer);
-  // shpjs 可能返回单个 Feature 或 FeatureCollection
   const fc = geojson.type === 'FeatureCollection' ? geojson : { type: 'FeatureCollection', features: [geojson] };
   return parseGeoJSON(fc);
 }
 
-export async function importData(text, format, fileBuffer, groupName) {
+// ===== 导入到数据库 =====
+export async function importData(text, format, fileBuffer, folderId) {
   let parsed;
   if (format === 'geojson') parsed = parseGeoJSON(text);
   else if (format === 'gpx') parsed = parseGPX(text);
@@ -321,23 +290,23 @@ export async function importData(text, format, fileBuffer, groupName) {
   else if (format === 'kml') parsed = parseKML(text);
   else if (format === 'shp') parsed = await parseSHP(fileBuffer);
   else throw new Error('未知格式');
-  // 用文件名覆盖分组，方便按文件管理
-  if (groupName) {
-    for (const m of parsed.markers) m.group = groupName;
-    for (const t of parsed.tracks) t.group = groupName;
+
+  // 写入数据库
+  for (const m of parsed.markers) {
+    await markersDB.create({ ...m, folder_id: folderId || null });
   }
-  for (const m of parsed.markers) await localMarkers.set(m);
-  for (const t of parsed.tracks) await localTracks.set(t);
+  for (const t of parsed.tracks) {
+    await tracksDB.create({ ...t, points: t.points, folder_id: folderId || null });
+  }
   return parsed;
 }
 
-export async function exportData(format) {
-  const markers = await localMarkers.list();
-  const tracks = await localTracks.list();
-  if (format === 'geojson') return { content: JSON.stringify(toGeoJSON(markers, tracks), null, 2), ext: 'geojson' };
-  if (format === 'gpx') return { content: toGPX(markers, tracks), ext: 'gpx' };
-  if (format === 'csv') return { content: toCSV(markers, tracks), ext: 'csv' };
-  if (format === 'kml') return { content: toKML(markers, tracks), ext: 'kml' };
+// ===== 导出 =====
+export async function exportData(format, allMarkers, allTracks) {
+  if (format === 'geojson') return { content: JSON.stringify(toGeoJSON(allMarkers, allTracks), null, 2), ext: 'geojson' };
+  if (format === 'gpx') return { content: toGPX(allMarkers, allTracks), ext: 'gpx' };
+  if (format === 'csv') return { content: toCSV(allMarkers, allTracks), ext: 'csv' };
+  if (format === 'kml') return { content: toKML(allMarkers, allTracks), ext: 'kml' };
   throw new Error('未知格式');
 }
 

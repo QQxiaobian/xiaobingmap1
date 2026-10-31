@@ -1,28 +1,17 @@
 {
   "name": "xiaobingmap",
   "version": "1.0.0",
-  "description": "精简版奥维地图工具 - Leaflet + Express + SQLite",
+  "description": "精简版奥维地图工具 - Leaflet + Supabase",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "node server/index.js",
-    "dev:all": "concurrently -k -n web,api -c blue,green \"vite\" \"node server/index.js\"",
     "build": "vite build",
-    "start": "cross-env NODE_ENV=production node server/index.js",
     "preview": "vite preview"
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.3.0",
-    "concurrently": "^9.0.1",
-    "cors": "^2.8.5",
-    "cross-env": "^7.0.3",
-    "express": "^4.21.0",
-    "jsonwebtoken": "^9.0.2",
+    "@supabase/supabase-js": "^2.45.0",
     "leaflet": "^1.9.4",
     "leaflet-draw": "^1.0.4",
-    "localforage": "^1.10.0",
-    "multer": "^1.4.5-lts.1",
     "shpjs": "^6.2.0"
   },
   "devDependencies": {

@@ -1,67 +1,174 @@
-// 本地离线缓存，基于 localForage + IndexedDB
-import localforage from 'localforage';
+// 数据层：通过 Supabase 读写收藏夹数据（文件夹、点位、线路）
+// 所有数据都按当前登录用户隔离，管理员可跨用户管理
+import { supabase } from './supabase.js';
 
-const stores = {
-  markers: localforage.createInstance({ name: 'xiaobingmap', storeName: 'markers' }),
-  tracks: localforage.createInstance({ name: 'xiaobingmap', storeName: 'tracks' }),
-  meta: localforage.createInstance({ name: 'xiaobingmap', storeName: 'meta' }),
+// ---- 文件夹 ----
+export const folders = {
+  async list() {
+    const { data, error } = await supabase
+      .from('folders')
+      .select('*')
+      .order('sort_order', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+  async create(name, parentId = null) {
+    const { data, error } = await supabase
+      .from('folders')
+      .insert({ name, parent_id: parentId })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async update(id, patch) {
+    const { data, error } = await supabase
+      .from('folders')
+      .update(patch)
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async remove(id) {
+    const { error } = await supabase.from('folders').delete().eq('id', id);
+    if (error) throw error;
+  },
 };
 
-// 通用 CRUD for an entity store
-function makeStore(store) {
-  return {
-    async list() {
-      const items = [];
-      await store.iterate((v) => { items.push(v); });
-      return items;
-    },
-    async get(id) { return store.getItem(id); },
-    async set(item) { return store.setItem(item.id, item); },
-    async remove(id) { return store.removeItem(id); },
-    async clear() { return store.clear(); },
-  };
-}
+// ---- 点位 ----
+export const markers = {
+  async list() {
+    const { data, error } = await supabase
+      .from('markers')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async listByUser(userId) {
+    const { data, error } = await supabase
+      .from('markers')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async create(payload) {
+    const { data, error } = await supabase
+      .from('markers')
+      .insert(payload)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async update(id, patch) {
+    const { data, error } = await supabase
+      .from('markers')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async remove(id) {
+    const { error } = await supabase.from('markers').delete().eq('id', id);
+    if (error) throw error;
+  },
+  async removeMany(ids) {
+    const { error } = await supabase.from('markers').delete().in('id', ids);
+    if (error) throw error;
+  },
+};
 
-export const localMarkers = makeStore(stores.markers);
-export const localTracks = makeStore(stores.tracks);
+// ---- 线路 ----
+export const tracks = {
+  async list() {
+    const { data, error } = await supabase
+      .from('tracks')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async listByUser(userId) {
+    const { data, error } = await supabase
+      .from('tracks')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async create(payload) {
+    const { data, error } = await supabase
+      .from('tracks')
+      .insert(payload)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async update(id, patch) {
+    const { data, error } = await supabase
+      .from('tracks')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async remove(id) {
+    const { error } = await supabase.from('tracks').delete().eq('id', id);
+    if (error) throw error;
+  },
+  async removeMany(ids) {
+    const { error } = await supabase.from('tracks').delete().in('id', ids);
+    if (error) throw error;
+  },
+};
 
-// 同步元信息
-export async function getLastSync(key) {
-  return (await stores.meta.getItem(`lastSync_${key}`)) || 0;
-}
-export async function setLastSync(key, ts) {
-  await stores.meta.setItem(`lastSync_${key}`, ts);
-}
-
-// 本地待同步队列（记录已本地删除但需通知服务端的ID）
-export async function getPendingDeletes(type) {
-  return (await stores.meta.getItem(`pendingDel_${type}`)) || [];
-}
-export async function addPendingDelete(type, id) {
-  const arr = await getPendingDeletes(type);
-  if (!arr.includes(id)) arr.push(id);
-  await stores.meta.setItem(`pendingDel_${type}`, arr);
-}
-export async function clearPendingDeletes(type) {
-  await stores.meta.removeItem(`pendingDel_${type}`);
-}
-
-// 认证信息缓存
-export async function saveAuth(auth) {
-  await stores.meta.setItem('auth', auth);
-}
-export async function getAuth() {
-  return await stores.meta.getItem('auth');
-}
-export async function clearAuth() {
-  await stores.meta.removeItem('auth');
-}
-
-// 用户配置
-export async function saveSettings(settings) {
-  const cur = (await stores.meta.getItem('settings')) || {};
-  await stores.meta.setItem('settings', { ...cur, ...settings });
-}
+// ---- 用户设置（localStorage）----
 export async function getSettings() {
-  return (await stores.meta.getItem('settings')) || { coordDisplay: 'WGS84', defaultLayer: 'esri' };
+  const raw = localStorage.getItem('xb_settings');
+  return raw ? JSON.parse(raw) : { coordDisplay: 'WGS84', defaultLayer: 'esri' };
 }
+
+export async function saveSettings(settings) {
+  const cur = await getSettings();
+  localStorage.setItem('xb_settings', JSON.stringify({ ...cur, ...settings }));
+}
+
+// ---- 用户信息 ----
+export const profiles = {
+  async list() {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, username, role, created_at')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+  async setRole(id, role) {
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ role })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async remove(id) {
+    // 通过 admin edge function 删除用户
+    const { error: fnError } = await supabase.functions.invoke('admin-delete-user', {
+      body: { userId: id },
+    });
+    if (fnError) throw fnError;
+  },
+};

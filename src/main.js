@@ -2,17 +2,19 @@
 import './styles/main.css';
 import L from 'leaflet';
 import { MapManager } from './lib/mapManager.js';
-import { localMarkers, localTracks, getSettings, saveSettings } from './lib/storage.js';
-import { syncAll } from './lib/sync.js';
-import { api, isOnline } from './lib/api.js';
+import { getSettings, saveSettings, folders, markers as markersDB, tracks as tracksDB, profiles } from './lib/storage.js';
 import { initAuth, getUser, isAdmin, isLoggedIn, login, register, logout } from './lib/auth.js';
 import { importData, exportData, downloadFile } from './lib/fileio.js';
 import { getLogs, clearLogs } from './lib/debug.js';
-import { CRS, gcj02ToWgs84 } from './lib/coord.js';
+import { CRS } from './lib/coord.js';
 
 let mapMgr = null;
 let currentPanel = null;
 let toastTimer = null;
+let allFolders = [];
+let allMarkers = [];
+let allTracks = [];
+let expandedFolders = new Set();
 
 // ---- Toast ----
 function toast(msg) {
@@ -43,6 +45,11 @@ function showModal(title, bodyHTML, footerHTML = '') {
   return { overlay, close };
 }
 
+// ---- HTML 转义 ----
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 // ---- 顶栏 ----
 function renderTopbar() {
   const user = getUser();
@@ -50,17 +57,15 @@ function renderTopbar() {
   tb.innerHTML = `
     <span class="logo">小兵地图</span>
     <span class="spacer"></span>
-    <span class="sync-status" id="syncStatus">${isOnline() ? '在线' : '离线'}</span>
-    <button class="btn-icon" id="btnSync" title="同步">⟳</button>
-    <button class="btn-icon" id="btnPanel" title="列表">☰</button>
+    <button class="btn-icon" id="btnPanel" title="收藏夹">☰</button>
     <button class="btn-icon" id="btnDebug" title="调试控制台">bug</button>
-    ${user ? `<span class="user-badge ${isAdmin() ? 'admin' : ''}">${user.username}${isAdmin() ? ' ★' : ''}</span>` : ''}
+    ${user ? `<span class="user-badge ${isAdmin() ? 'admin' : ''}">${esc(user.username)}${isAdmin() ? ' ★' : ''}</span>` : ''}
     <button class="btn-icon" id="btnAuth" title="账号">${user ? '⎋' : '⨀'}</button>
   `;
-  document.getElementById('btnSync').onclick = doSync;
   document.getElementById('btnPanel').onclick = () => togglePanel('list');
   document.getElementById('btnDebug').onclick = toggleDebug;
   document.getElementById('btnAuth').onclick = () => user ? doLogout() : showAuthModal();
+  if (isAdmin()) addAdminButton();
 }
 
 // ---- 工具栏 ----
@@ -103,7 +108,6 @@ function renderGPSBtn() {
 // ---- 坐标搜索 ----
 function parseCoordInput(input) {
   input = input.trim();
-  // 度分秒格式: 25°08'52.4"N 103°02'39.1"E
   const dmsMatch = input.match(/(\d+)°\s*(\d+)['′]\s*([\d.]+)["″]?\s*([NSns])?[\s,]+(\d+)°\s*(\d+)['′]\s*([\d.]+)["″]?\s*([EWewE]?)/);
   if (dmsMatch) {
     const lat = parseInt(dmsMatch[1]) + parseInt(dmsMatch[2]) / 60 + parseFloat(dmsMatch[3]) / 3600;
@@ -112,19 +116,11 @@ function parseCoordInput(input) {
     const lngVal = (dmsMatch[8] || '').toUpperCase() === 'W' ? -lng : lng;
     return { lat: latVal, lng: lngVal };
   }
-  // 十进制: lng,lat 或 lat,lng
   const parts = input.split(/[\s,]+/).filter(s => s).map(parseFloat);
   if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-    // 中国经度 70-140, 纬度 0-55 — 判断哪个是经度
     let [a, b] = parts;
-    if (a >= 60 && a <= 150) {
-      // a 是经度
-      return { lat: b, lng: a };
-    } else if (b >= 60 && b <= 150) {
-      // b 是经度
-      return { lat: a, lng: b };
-    }
-    // 默认: 第一个是经度
+    if (a >= 60 && a <= 150) return { lat: b, lng: a };
+    else if (b >= 60 && b <= 150) return { lat: a, lng: b };
     return { lat: b, lng: a };
   }
   return null;
@@ -138,7 +134,6 @@ function renderSearchBox() {
     const val = input.value.trim();
     if (!val) { toast('请输入坐标或名称'); return; }
 
-    // 先尝试坐标解析
     const coord = parseCoordInput(val);
     if (coord) {
       mapMgr.flyToCoord(coord.lat, coord.lng);
@@ -146,27 +141,20 @@ function renderSearchBox() {
       return;
     }
 
-    // 搜索收藏的点位和线路
-    const markers = await localMarkers.list();
-    const tracks = await localTracks.list();
     const q = val.toLowerCase();
-    const matchMarkers = markers.filter(m =>
+    const matchMarkers = allMarkers.filter(m =>
       (m.name || '').toLowerCase().includes(q) ||
-      (m.remark || '').toLowerCase().includes(q) ||
-      (m.group || '').toLowerCase().includes(q)
+      (m.remark || '').toLowerCase().includes(q)
     );
-    const matchTracks = tracks.filter(t =>
+    const matchTracks = allTracks.filter(t =>
       (t.name || '').toLowerCase().includes(q) ||
-      (t.remark || '').toLowerCase().includes(q) ||
-      (t.group || '').toLowerCase().includes(q)
+      (t.remark || '').toLowerCase().includes(q)
     );
 
     if (matchMarkers.length === 0 && matchTracks.length === 0) {
       toast('未找到匹配的点位或线路');
       return;
     }
-
-    // 单个结果直接定位
     if (matchMarkers.length === 1 && matchTracks.length === 0) {
       mapMgr.flyToMarker(matchMarkers[0]);
       toast(`已定位: ${matchMarkers[0].name}`);
@@ -177,8 +165,6 @@ function renderSearchBox() {
       toast(`已定位: ${matchTracks[0].name}`);
       return;
     }
-
-    // 多个结果弹出选择列表
     showSearchResults(matchMarkers, matchTracks);
   };
 
@@ -191,13 +177,13 @@ function showSearchResults(markers, tracks) {
   for (const m of markers) {
     body += `<div class="list-item" data-srch-mk="${m.id}">
       <span class="item-icon">📍</span>
-      <div class="item-info"><div class="item-name">${esc(m.name)}</div><div class="item-sub">${esc(m.group || '')} · ${m.lng?.toFixed(4)},${m.lat?.toFixed(4)}</div></div>
+      <div class="item-info"><div class="item-name">${esc(m.name)}</div><div class="item-sub">${m.lng?.toFixed(4)},${m.lat?.toFixed(4)}</div></div>
     </div>`;
   }
   for (const t of tracks) {
     body += `<div class="list-item" data-srch-tk="${t.id}">
       <span class="item-icon">〰</span>
-      <div class="item-info"><div class="item-name">${esc(t.name)}</div><div class="item-sub">${esc(t.group || '')} · ${(t.points||[]).length} 个点</div></div>
+      <div class="item-info"><div class="item-name">${esc(t.name)}</div><div class="item-sub">${(t.points||[]).length} 个点</div></div>
     </div>`;
   }
   body += '</div>';
@@ -220,62 +206,85 @@ function showSearchResults(markers, tracks) {
 function updateCoordDisplay(latlng) {
   const el = document.querySelector('.coord-display');
   if (!el) return;
-  el.textContent = `经度: ${latlng.lng.toFixed(6)}  纬度: ${latlng.lat.toFixed(6)}  [${mapMgr.currentCRS}]`;
+  const disp = mapMgr._toDisplay(latlng);
+  el.textContent = `经度: ${disp.lng.toFixed(6)}  纬度: ${disp.lat.toFixed(6)}  [${mapMgr.currentCRS}]`;
+}
+
+// ---- 加载数据 ----
+async function loadAllData() {
+  const [foldersData, markersData, tracksData] = await Promise.all([
+    folders.list(),
+    markersDB.list(),
+    tracksDB.list(),
+  ]);
+  allFolders = foldersData;
+  allMarkers = markersData;
+  allTracks = tracksData;
+}
+
+async function loadUserData(userId) {
+  const [markersData, tracksData] = await Promise.all([
+    markersDB.listByUser(userId),
+    tracksDB.listByUser(userId),
+  ]);
+  return { markers: markersData, tracks: tracksData };
 }
 
 // ---- 打点 ----
 function addMarkerMode() {
   toast('点击地图添加点位');
-  mapMgr.onMapClick = async (latlng) => {
+  mapMgr.onMapClick = async (dispLatLng) => {
     mapMgr.onMapClick = null;
-    showMarkerModal({ lat: latlng.lat, lng: latlng.lng });
+    // 点击的显示坐标转回WGS84
+    const wgs84 = mapMgr._fromDisplay(dispLatLng);
+    showMarkerModal({ lat: wgs84.lat, lng: wgs84.lng });
   };
 }
 
 async function showMarkerModal(partial) {
-  const settings = await getSettings();
-  const groups = await getGroups();
-  const groupOpts = groups.map(g => `<option value="${g}">${g}</option>`).join('') + '<option value="">+ 新分组</option>';
+  const folderTree = buildFolderSelectOptions();
   const body = `
     <div class="form-group"><label>名称</label><input class="form-input" id="mkName" placeholder="点位名称"></div>
     <div class="form-group"><label>备注</label><textarea class="form-textarea" id="mkRemark" placeholder="备注信息"></textarea></div>
-    <div class="form-group"><label>分组</label><select class="form-select" id="mkGroupSel">${groupOpts}</select></div>
-    <div class="form-group" id="mkNewGroupWrap" style="display:none"><label>新分组名</label><input class="form-input" id="mkNewGroup"></div>
-    <div class="form-group"><label>坐标 (${mapMgr.currentCRS})</label>
+    <div class="form-group"><label>收藏夹</label>${folderTree}</div>
+    <div class="form-group" id="mkNewFolderWrap" style="display:none"><label>新文件夹名</label><input class="form-input" id="mkNewFolder"></div>
+    <div class="form-group"><label>坐标</label>
       <div style="font-family:monospace;font-size:13px;color:var(--text-muted)">
-        ${partial.lng?.toFixed(6) || ''}, ${partial.lat?.toFixed(6) || ''}
+        ${partial.lng?.toFixed(6) || ''}, ${partial.lat?.toFixed(6) || ''} (WGS84)
       </div>
     </div>`;
   const footer = `<button class="btn btn-outline" id="mkCancel">取消</button><button class="btn btn-primary" id="mkSave">保存</button>`;
-  const { overlay, close } = showModal('添加点位', body, footer);
+  const { close } = showModal('添加点位', body, footer);
   document.getElementById('mkCancel').onclick = close;
-  document.getElementById('mkGroupSel').onchange = (e) => {
-    document.getElementById('mkNewGroupWrap').style.display = e.target.value === '' ? 'block' : 'none';
+  const folderSel = document.getElementById('mkFolderSel');
+  const newFolderWrap = document.getElementById('mkNewFolderWrap');
+  folderSel.onchange = (e) => {
+    newFolderWrap.style.display = e.target.value === '__new' ? 'block' : 'none';
   };
   document.getElementById('mkSave').onclick = async () => {
     const name = document.getElementById('mkName').value.trim() || '未命名点位';
     const remark = document.getElementById('mkRemark').value.trim();
-    const groupSel = document.getElementById('mkGroupSel').value;
-    const newGroup = document.getElementById('mkNewGroup').value.trim();
-    const group = groupSel || newGroup || '默认';
-    // 存储用 WGS84
-    let storeLat = partial.lat, storeLng = partial.lng;
-    if (mapMgr.currentCRS === CRS.GCJ02) {
-      const [wlng, wlat] = gcj02ToWgs84(partial.lng, partial.lat);
-      [storeLng, storeLat] = [wlng, wlat];
+    const folderVal = folderSel.value;
+    let folderId = null;
+    if (folderVal === '__new') {
+      const newName = document.getElementById('mkNewFolder').value.trim();
+      if (newName) {
+        const f = await folders.create(newName, null);
+        folderId = f.id;
+      }
+    } else if (folderVal && folderVal !== '__root') {
+      folderId = folderVal;
     }
-    const marker = {
-      id: 'loc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
-      name, remark, group, lat: storeLat, lng: storeLng,
-      userId: getUser()?.id || null,
-      updateAt: Date.now(), _dirty: true,
-    };
-    await localMarkers.set(marker);
-    mapMgr.addMarker(marker);
-    close();
-    toast('点位已添加');
-    if (currentPanel === 'list') renderListPanel();
-    autoSync();
+    try {
+      const created = await markersDB.create({ name, remark, lat: partial.lat, lng: partial.lng, folder_id: folderId });
+      allMarkers.unshift(created);
+      mapMgr.addMarker(created);
+      close();
+      toast('点位已添加');
+      if (currentPanel === 'list') renderListPanel();
+    } catch (e) {
+      toast('保存失败: ' + e.message);
+    }
   };
 }
 
@@ -283,43 +292,50 @@ async function showMarkerModal(partial) {
 function drawTrackMode() {
   toast('点击地图绘制线路，双击结束');
   mapMgr.enableDrawTrack(async (pts) => {
-    const groups = await getGroups();
-    const groupOpts = groups.map(g => `<option value="${g}">${g}</option>`).join('') + '<option value="">+ 新分组</option>';
+    const folderTree = buildFolderSelectOptions();
     const body = `
       <div class="form-group"><label>名称</label><input class="form-input" id="tkName" placeholder="线路名称"></div>
       <div class="form-group"><label>备注</label><textarea class="form-textarea" id="tkRemark"></textarea></div>
-      <div class="form-group"><label>分组</label><select class="form-select" id="tkGroupSel">${groupOpts}</select></div>
-      <div class="form-group" id="tkNewGroupWrap" style="display:none"><label>新分组名</label><input class="form-input" id="tkNewGroup"></div>
+      <div class="form-group"><label>收藏夹</label>${folderTree}</div>
+      <div class="form-group" id="tkNewFolderWrap" style="display:none"><label>新文件夹名</label><input class="form-input" id="tkNewFolder"></div>
       <div class="form-group"><label>点数</label><div style="color:var(--text-muted)">${pts.length} 个点</div></div>`;
     const footer = `<button class="btn btn-outline" id="tkCancel">取消</button><button class="btn btn-primary" id="tkSave">保存</button>`;
     const { close } = showModal('保存线路', body, footer);
     document.getElementById('tkCancel').onclick = close;
-    document.getElementById('tkGroupSel').onchange = (e) => {
-      document.getElementById('tkNewGroupWrap').style.display = e.target.value === '' ? 'block' : 'none';
+    const folderSel = document.getElementById('tkFolderSel');
+    const newFolderWrap = document.getElementById('tkNewFolderWrap');
+    folderSel.onchange = (e) => {
+      newFolderWrap.style.display = e.target.value === '__new' ? 'block' : 'none';
     };
     document.getElementById('tkSave').onclick = async () => {
       const name = document.getElementById('tkName').value.trim() || '未命名线路';
       const remark = document.getElementById('tkRemark').value.trim();
-      const groupSel = document.getElementById('tkGroupSel').value;
-      const newGroup = document.getElementById('tkNewGroup').value.trim();
-      const group = groupSel || newGroup || '默认';
-      const track = {
-        id: 'loc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
-        name, remark, group, points: pts,
-        userId: getUser()?.id || null,
-        updateAt: Date.now(), _dirty: true,
-      };
-      await localTracks.set(track);
-      mapMgr.addTrack(track);
-      close();
-      toast('线路已保存');
-      if (currentPanel === 'list') renderListPanel();
-      autoSync();
+      const folderVal = folderSel.value;
+      let folderId = null;
+      if (folderVal === '__new') {
+        const newName = document.getElementById('tkNewFolder').value.trim();
+        if (newName) {
+          const f = await folders.create(newName, null);
+          folderId = f.id;
+        }
+      } else if (folderVal && folderVal !== '__root') {
+        folderId = folderVal;
+      }
+      try {
+        const created = await tracksDB.create({ name, remark, points: pts, folder_id: folderId });
+        allTracks.unshift(created);
+        mapMgr.addTrack(created);
+        close();
+        toast('线路已保存');
+        if (currentPanel === 'list') renderListPanel();
+      } catch (e) {
+        toast('保存失败: ' + e.message);
+      }
     };
   });
 }
 
-// ---- 测距 ----
+// ---- 测距/测面积 ----
 function measureDistanceMode() {
   toast('点击地图测距，双击结束');
   mapMgr.enableMeasureDistance((dist) => {
@@ -327,7 +343,6 @@ function measureDistanceMode() {
   });
 }
 
-// ---- 测面积 ----
 function measureAreaMode() {
   toast('点击地图测面积，双击结束');
   mapMgr.enableMeasureArea((area) => {
@@ -335,178 +350,355 @@ function measureAreaMode() {
   });
 }
 
-// ---- 分组列表 ----
-async function getGroups() {
-  const markers = await localMarkers.list();
-  const tracks = await localTracks.list();
-  const set = new Set(['默认']);
-  markers.forEach(m => set.add(m.group || '默认'));
-  tracks.forEach(t => set.add(t.group || '默认'));
-  return [...set];
-}
-
-// ---- 列表面板 ----
-async function renderListPanel() {
-  const panel = document.querySelector('.side-panel');
-  const markers = await localMarkers.list();
-  const tracks = await localTracks.list();
-  const grouped = {};
-  for (const m of markers) {
-    const g = m.group || '默认';
-    if (!grouped[g]) grouped[g] = { markers: [], tracks: [] };
-    grouped[g].markers.push(m);
-  }
-  for (const t of tracks) {
-    const g = t.group || '默认';
-    if (!grouped[g]) grouped[g] = { markers: [], tracks: [] };
-    grouped[g].tracks.push(t);
-  }
-  let html = '';
-  if (markers.length === 0 && tracks.length === 0) {
-    html = '<div class="empty-state"><div class="icon">📍</div>暂无点位和线路<br>点击工具栏添加</div>';
-  } else {
-    for (const [group, items] of Object.entries(grouped).sort()) {
-      html += `<div class="section-title">${esc(group)}</div>`;
-      for (const m of items.markers) {
-        html += `<div class="list-item" data-mid="${m.id}">
-          <span class="item-icon">📍</span>
-          <div class="item-info"><div class="item-name">${esc(m.name)}</div><div class="item-sub">${esc(m.remark || '')}</div></div>
-          <div class="item-actions">
-            <button data-edit-mk="${m.id}" title="编辑">✎</button>
-            <button data-del-mk="${m.id}" title="删除">✕</button>
-          </div>
-        </div>`;
-      }
-      for (const t of items.tracks) {
-        html += `<div class="list-item" data-tid="${t.id}">
-          <span class="item-icon">〰</span>
-          <div class="item-info"><div class="item-name">${esc(t.name)}</div><div class="item-sub">${(t.points||[]).length} 个点</div></div>
-          <div class="item-actions">
-            <button data-edit-tk="${t.id}" title="编辑">✎</button>
-            <button data-del-tk="${t.id}" title="删除">✕</button>
-          </div>
-        </div>`;
-      }
+// ---- 收藏夹树形结构 ----
+function buildFolderSelectOptions() {
+  const tree = buildFolderTree(allFolders);
+  let opts = '<select class="form-select" id="mkFolderSel"><option value="__root">根目录</option>';
+  function walk(nodes, depth) {
+    for (const n of nodes) {
+      opts += `<option value="${n.id}">${'　'.repeat(depth)}📁 ${esc(n.name)}</option>`;
+      walk(n.children || [], depth + 1);
     }
   }
+  walk(tree, 0);
+  opts += '<option value="__new">+ 新文件夹</option></select>';
+  return opts;
+}
+
+function buildFolderTree(folderList) {
+  const map = new Map();
+  const roots = [];
+  for (const f of folderList) {
+    map.set(f.id, { ...f, children: [] });
+  }
+  for (const f of folderList) {
+    const node = map.get(f.id);
+    if (f.parent_id && map.has(f.parent_id)) {
+      map.get(f.parent_id).children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  return roots;
+}
+
+function renderListPanel() {
+  const panel = document.querySelector('.side-panel');
+  const tree = buildFolderTree(allFolders);
+  const rootMarkers = allMarkers.filter(m => !m.folder_id);
+  const rootTracks = allTracks.filter(t => !t.folder_id);
+
+  let html = '<div class="folder-toolbar">' +
+    '<button class="btn btn-outline btn-sm" id="btnNewFolder">+ 新建文件夹</button>' +
+    '<button class="btn btn-outline btn-sm" id="btnExpandAll">全部展开</button>' +
+    '<button class="btn btn-outline btn-sm" id="btnCollapseAll">全部收起</button>' +
+    '</div>';
+
+  if (tree.length === 0 && rootMarkers.length === 0 && rootTracks.length === 0) {
+    html = '<div class="empty-state"><div class="icon">📍</div>暂无收藏数据<br>点击工具栏添加点位或线路</div>';
+  } else {
+    // 根目录下的散落数据
+    if (rootMarkers.length > 0 || rootTracks.length > 0) {
+      html += renderFolderHeader('未分类', '__root', rootMarkers, rootTracks, true);
+      if (expandedFolders.has('__root')) {
+        html += renderItems(rootMarkers, rootTracks, '__root');
+      }
+    }
+    // 文件夹树
+    for (const node of tree) {
+      html += renderFolderNode(node, 0);
+    }
+  }
+
   panel.querySelector('.panel-body').innerHTML = html;
-  // 绑定点击
-  panel.querySelectorAll('[data-mid]').forEach(el => {
+  bindFolderEvents();
+  bindItemEvents();
+}
+
+function renderFolderNode(node, depth) {
+  const folderMarkers = allMarkers.filter(m => m.folder_id === node.id);
+  const folderTracks = allTracks.filter(t => t.folder_id === node.id);
+  const childCount = countAllDescendants(node);
+  const total = folderMarkers.length + folderTracks.length + childCount;
+  const isExpanded = expandedFolders.has(node.id);
+
+  let html = renderFolderHeader(node.name, node.id, folderMarkers, folderTracks, isExpanded, depth, total);
+  if (isExpanded) {
+    html += renderItems(folderMarkers, folderTracks, node.id);
+    for (const child of node.children || []) {
+      html += renderFolderNode(child, depth + 1);
+    }
+  }
+  return html;
+}
+
+function countAllDescendants(node) {
+  let count = 0;
+  for (const child of node.children || []) {
+    count += allMarkers.filter(m => m.folder_id === child.id).length;
+    count += allTracks.filter(t => t.folder_id === child.id).length;
+    count += countAllDescendants(child);
+  }
+  return count;
+}
+
+function renderFolderHeader(name, id, folderMarkers, folderTracks, isExpanded, depth = 0, total = null) {
+  const count = total !== null ? total : folderMarkers.length + folderTracks.length;
+  const indent = depth * 16;
+  const arrow = isExpanded ? '▾' : '▸';
+  return `
+    <div class="folder-header" data-folder="${id}" style="padding-left:${12 + indent}px">
+      <span class="folder-arrow">${arrow}</span>
+      <span class="folder-icon">📁</span>
+      <span class="folder-name">${esc(name)}</span>
+      <span class="folder-count">${count}</span>
+      <span class="folder-actions">
+        <button data-add-folder="${id}" title="子文件夹" class="folder-btn">＋</button>
+        <button data-del-folder="${id}" title="删除文件夹" class="folder-btn">✕</button>
+      </span>
+    </div>`;
+}
+
+function renderItems(folderMarkers, folderTracks, folderId) {
+  let html = '';
+  for (const m of folderMarkers) {
+    html += `<div class="list-item" data-mid="${m.id}" data-folder="${folderId}">
+      <span class="item-icon">📍</span>
+      <div class="item-info"><div class="item-name">${esc(m.name)}</div><div class="item-sub">${esc(m.remark || '')}</div></div>
+      <div class="item-actions">
+        <button data-edit-mk="${m.id}" title="编辑">✎</button>
+        <button data-del-mk="${m.id}" title="删除">✕</button>
+      </div>
+    </div>`;
+  }
+  for (const t of folderTracks) {
+    html += `<div class="list-item" data-tid="${t.id}" data-folder="${folderId}">
+      <span class="item-icon">〰</span>
+      <div class="item-info"><div class="item-name">${esc(t.name)}</div><div class="item-sub">${(t.points||[]).length} 个点</div></div>
+      <div class="item-actions">
+        <button data-edit-tk="${t.id}" title="编辑">✎</button>
+        <button data-del-tk="${t.id}" title="删除">✕</button>
+      </div>
+    </div>`;
+  }
+  return html;
+}
+
+function bindFolderEvents() {
+  // 展开/收起
+  document.querySelectorAll('.folder-header').forEach(el => {
     el.onclick = (e) => {
-      if (e.target.dataset.delMk) return;
-      const m = markers.find(x => x.id === el.dataset.mid);
+      if (e.target.closest('.folder-actions')) return;
+      const id = el.dataset.folder;
+      if (expandedFolders.has(id)) {
+        expandedFolders.delete(id);
+      } else {
+        expandedFolders.add(id);
+      }
+      renderListPanel();
+    };
+  });
+
+  // 新建子文件夹
+  document.querySelectorAll('[data-add-folder]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const parentId = btn.dataset.addFolder;
+      const realParentId = parentId === '__root' ? null : parentId;
+      showNewFolderModal(realParentId);
+    };
+  });
+
+  // 删除文件夹
+  document.querySelectorAll('[data-del-folder]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.delFolder;
+      if (id === '__root') return;
+      if (!confirm('删除文件夹将同时删除其中的所有子文件夹和收藏，确认删除？')) return;
+      try {
+        await folders.remove(id);
+        allFolders = allFolders.filter(f => f.id !== id);
+        allMarkers = allMarkers.filter(m => m.folder_id !== id);
+        allTracks = allTracks.filter(t => t.folder_id !== id);
+        renderListPanel();
+        refreshMap();
+        toast('文件夹已删除');
+      } catch (err) {
+        toast('删除失败: ' + err.message);
+      }
+    };
+  });
+
+  // 工具栏按钮
+  const btnNewFolder = document.getElementById('btnNewFolder');
+  if (btnNewFolder) btnNewFolder.onclick = () => showNewFolderModal(null);
+  const btnExpandAll = document.getElementById('btnExpandAll');
+  if (btnExpandAll) btnExpandAll.onclick = () => {
+    function addAll(nodes) {
+      for (const n of nodes) {
+        expandedFolders.add(n.id);
+        addAll(n.children || []);
+      }
+    }
+    expandedFolders.add('__root');
+    addAll(buildFolderTree(allFolders));
+    renderListPanel();
+  };
+  const btnCollapseAll = document.getElementById('btnCollapseAll');
+  if (btnCollapseAll) btnCollapseAll.onclick = () => {
+    expandedFolders.clear();
+    renderListPanel();
+  };
+}
+
+function bindItemEvents() {
+  // 点位点击
+  document.querySelectorAll('[data-mid]').forEach(el => {
+    el.onclick = (e) => {
+      if (e.target.closest('.item-actions')) return;
+      const m = allMarkers.find(x => x.id === el.dataset.mid);
       if (m) mapMgr.flyToMarker(m);
     };
   });
-  panel.querySelectorAll('[data-tid]').forEach(el => {
+  // 线路点击
+  document.querySelectorAll('[data-tid]').forEach(el => {
     el.onclick = (e) => {
-      if (e.target.dataset.delTk) return;
-      const t = tracks.find(x => x.id === el.dataset.tid);
+      if (e.target.closest('.item-actions')) return;
+      const t = allTracks.find(x => x.id === el.dataset.tid);
       if (t) mapMgr.flyToTrack(t);
     };
   });
-  panel.querySelectorAll('[data-del-mk]').forEach(btn => {
+  // 删除点位
+  document.querySelectorAll('[data-del-mk]').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
       const id = btn.dataset.delMk;
-      await localMarkers.remove(id);
-      mapMgr.removeMarker(id);
-      renderListPanel();
-      autoSync();
+      try {
+        await markersDB.remove(id);
+        allMarkers = allMarkers.filter(m => m.id !== id);
+        mapMgr.removeMarker(id);
+        renderListPanel();
+      } catch (err) { toast('删除失败: ' + err.message); }
     };
   });
-  panel.querySelectorAll('[data-edit-mk]').forEach(btn => {
-    btn.onclick = async (e) => {
+  // 编辑点位
+  document.querySelectorAll('[data-edit-mk]').forEach(btn => {
+    btn.onclick = (e) => {
       e.stopPropagation();
-      const m = markers.find(x => x.id === btn.dataset.editMk);
+      const m = allMarkers.find(x => x.id === btn.dataset.editMk);
       if (m) showEditMarkerModal(m);
     };
   });
-  panel.querySelectorAll('[data-del-tk]').forEach(btn => {
+  // 删除线路
+  document.querySelectorAll('[data-del-tk]').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
       const id = btn.dataset.delTk;
-      await localTracks.remove(id);
-      mapMgr.removeTrack(id);
-      renderListPanel();
-      autoSync();
+      try {
+        await tracksDB.remove(id);
+        allTracks = allTracks.filter(t => t.id !== id);
+        mapMgr.removeTrack(id);
+        renderListPanel();
+      } catch (err) { toast('删除失败: ' + err.message); }
     };
   });
-  panel.querySelectorAll('[data-edit-tk]').forEach(btn => {
-    btn.onclick = async (e) => {
+  // 编辑线路
+  document.querySelectorAll('[data-edit-tk]').forEach(btn => {
+    btn.onclick = (e) => {
       e.stopPropagation();
-      const t = tracks.find(x => x.id === btn.dataset.editTk);
+      const t = allTracks.find(x => x.id === btn.dataset.editTk);
       if (t) showEditTrackModal(t);
     };
   });
 }
 
+function showNewFolderModal(parentId) {
+  const body = `<div class="form-group"><label>文件夹名称</label><input class="form-input" id="newFolderName" placeholder="如：爬山路线"></div>`;
+  const footer = `<button class="btn btn-outline" id="nfCancel">取消</button><button class="btn btn-primary" id="nfSave">创建</button>`;
+  const { close } = showModal('新建文件夹', body, footer);
+  document.getElementById('nfCancel').onclick = close;
+  document.getElementById('nfSave').onclick = async () => {
+    const name = document.getElementById('newFolderName').value.trim();
+    if (!name) { toast('请输入名称'); return; }
+    try {
+      const f = await folders.create(name, parentId);
+      allFolders.push(f);
+      expandedFolders.add(f.id);
+      if (parentId) expandedFolders.add(parentId);
+      else expandedFolders.add('__root');
+      close();
+      renderListPanel();
+      toast('文件夹已创建');
+    } catch (e) {
+      toast('创建失败: ' + e.message);
+    }
+  };
+  setTimeout(() => document.getElementById('newFolderName')?.focus(), 100);
+}
+
 // ---- 编辑点位 ----
 async function showEditMarkerModal(marker) {
-  const groups = await getGroups();
-  const groupOpts = groups.map(g => `<option value="${g}" ${g === (marker.group || '默认') ? 'selected' : ''}>${g}</option>`).join('') + '<option value="">+ 新分组</option>';
+  const folderTree = buildFolderSelectOptions();
   const body = `
     <div class="form-group"><label>名称</label><input class="form-input" id="edMkName" value="${esc(marker.name)}"></div>
     <div class="form-group"><label>备注</label><textarea class="form-textarea" id="edMkRemark">${esc(marker.remark || '')}</textarea></div>
-    <div class="form-group"><label>分组</label><select class="form-select" id="edMkGroupSel">${groupOpts}</select></div>
-    <div class="form-group" id="edMkNewGroupWrap" style="display:none"><label>新分组名</label><input class="form-input" id="edMkNewGroup"></div>
-    <div class="form-group"><label>坐标 (WGS84)</label>
+    <div class="form-group"><label>收藏夹</label><select class="form-select" id="edMkFolderSel">${folderTree.replace('id="mkFolderSel"', 'id="edMkFolderSel"')}</select></div>
+    <div class="form-group"><label>坐标</label>
       <div style="font-family:monospace;font-size:13px;color:var(--text-muted)">
-        ${marker.lng?.toFixed(6) || ''}, ${marker.lat?.toFixed(6) || ''}
+        ${marker.lng?.toFixed(6) || ''}, ${marker.lat?.toFixed(6) || ''} (WGS84)
       </div>
     </div>`;
   const footer = `<button class="btn btn-outline" id="edMkCancel">取消</button><button class="btn btn-primary" id="edMkSave">保存</button>`;
   const { close } = showModal('编辑点位', body, footer);
   document.getElementById('edMkCancel').onclick = close;
-  document.getElementById('edMkGroupSel').onchange = (e) => {
-    document.getElementById('edMkNewGroupWrap').style.display = e.target.value === '' ? 'block' : 'none';
-  };
+  const sel = document.getElementById('edMkFolderSel');
+  sel.value = marker.folder_id || '__root';
   document.getElementById('edMkSave').onclick = async () => {
     const name = document.getElementById('edMkName').value.trim() || '未命名点位';
     const remark = document.getElementById('edMkRemark').value.trim();
-    const groupSel = document.getElementById('edMkGroupSel').value;
-    const newGroup = document.getElementById('edMkNewGroup').value.trim();
-    const group = groupSel || newGroup || '默认';
-    const updated = { ...marker, name, remark, group, updateAt: Date.now(), _dirty: true };
-    await localMarkers.set(updated);
-    mapMgr.updateMarker(updated);
-    close();
-    toast('点位已更新');
-    renderListPanel();
-    autoSync();
+    const folderVal = sel.value;
+    let folderId = (folderVal && folderVal !== '__root') ? folderVal : null;
+    try {
+      const updated = await markersDB.update(marker.id, { name, remark, folder_id: folderId });
+      const idx = allMarkers.findIndex(m => m.id === marker.id);
+      if (idx >= 0) allMarkers[idx] = updated;
+      mapMgr.updateMarker(updated);
+      close();
+      toast('点位已更新');
+      renderListPanel();
+    } catch (e) { toast('保存失败: ' + e.message); }
   };
 }
 
 // ---- 编辑线路 ----
 async function showEditTrackModal(track) {
-  const groups = await getGroups();
-  const groupOpts = groups.map(g => `<option value="${g}" ${g === (track.group || '默认') ? 'selected' : ''}>${g}</option>`).join('') + '<option value="">+ 新分组</option>';
+  const folderTree = buildFolderSelectOptions();
   const body = `
     <div class="form-group"><label>名称</label><input class="form-input" id="edTkName" value="${esc(track.name)}"></div>
     <div class="form-group"><label>备注</label><textarea class="form-textarea" id="edTkRemark">${esc(track.remark || '')}</textarea></div>
-    <div class="form-group"><label>分组</label><select class="form-select" id="edTkGroupSel">${groupOpts}</select></div>
-    <div class="form-group" id="edTkNewGroupWrap" style="display:none"><label>新分组名</label><input class="form-input" id="edTkNewGroup"></div>
+    <div class="form-group"><label>收藏夹</label><select class="form-select" id="edTkFolderSel">${folderTree.replace('id="mkFolderSel"', 'id="edTkFolderSel"')}</select></div>
     <div class="form-group"><label>点数</label><div style="color:var(--text-muted)">${(track.points||[]).length} 个点</div></div>`;
   const footer = `<button class="btn btn-outline" id="edTkCancel">取消</button><button class="btn btn-primary" id="edTkSave">保存</button>`;
   const { close } = showModal('编辑线路', body, footer);
   document.getElementById('edTkCancel').onclick = close;
-  document.getElementById('edTkGroupSel').onchange = (e) => {
-    document.getElementById('edTkNewGroupWrap').style.display = e.target.value === '' ? 'block' : 'none';
-  };
+  const sel = document.getElementById('edTkFolderSel');
+  sel.value = track.folder_id || '__root';
   document.getElementById('edTkSave').onclick = async () => {
     const name = document.getElementById('edTkName').value.trim() || '未命名线路';
     const remark = document.getElementById('edTkRemark').value.trim();
-    const groupSel = document.getElementById('edTkGroupSel').value;
-    const newGroup = document.getElementById('edTkNewGroup').value.trim();
-    const group = groupSel || newGroup || '默认';
-    const updated = { ...track, name, remark, group, updateAt: Date.now(), _dirty: true };
-    await localTracks.set(updated);
-    mapMgr.removeTrack(track.id);
-    mapMgr.addTrack(updated);
-    close();
-    toast('线路已更新');
-    renderListPanel();
-    autoSync();
+    const folderVal = sel.value;
+    let folderId = (folderVal && folderVal !== '__root') ? folderVal : null;
+    try {
+      const updated = await tracksDB.update(track.id, { name, remark, folder_id: folderId });
+      const idx = allTracks.findIndex(t => t.id === track.id);
+      if (idx >= 0) allTracks[idx] = updated;
+      mapMgr.removeTrack(track.id);
+      mapMgr.addTrack(updated);
+      close();
+      toast('线路已更新');
+      renderListPanel();
+    } catch (e) { toast('保存失败: ' + e.message); }
   };
 }
 
@@ -521,7 +713,7 @@ function togglePanel(type) {
   currentPanel = type;
   panel.classList.add('open');
   if (type === 'list') {
-    panel.querySelector('.panel-header').innerHTML = `<h2>点位与线路</h2>`;
+    panel.querySelector('.panel-header').innerHTML = `<h2>收藏夹</h2>`;
     renderListPanel();
   } else if (type === 'admin') {
     renderAdminPanel();
@@ -530,6 +722,7 @@ function togglePanel(type) {
 
 // ---- 导入模态框 ----
 function showImportModal() {
+  const folderTree = buildFolderSelectOptions();
   const body = `
     <div class="form-group"><label>选择格式</label>
       <select class="form-select" id="impFormat">
@@ -540,8 +733,8 @@ function showImportModal() {
         <option value="csv">CSV</option>
       </select>
     </div>
+    <div class="form-group"><label>导入到文件夹</label>${folderTree.replace('id="mkFolderSel"', 'id="impFolderSel"')}</div>
     <div class="form-group"><label>选择文件</label><input type="file" id="impFile" accept=".geojson,.json,.gpx,.kml,.csv,.shp,.zip"></div>
-    <div class="form-group"><label><input type="checkbox" id="impUseFileName" checked> 用文件名作为分组</label></div>
     <div class="form-group"><label>或粘贴内容</label><textarea class="form-textarea" id="impText" style="min-height:100px"></textarea></div>`;
   const footer = `<button class="btn btn-outline" id="impCancel">取消</button><button class="btn btn-primary" id="impGo">导入</button>`;
   const { close } = showModal('导入数据', body, footer);
@@ -550,33 +743,25 @@ function showImportModal() {
     const format = document.getElementById('impFormat').value;
     const file = document.getElementById('impFile').files[0];
     const text = document.getElementById('impText').value.trim();
-    const useFileName = document.getElementById('impUseFileName').checked;
+    const folderVal = document.getElementById('impFolderSel').value;
+    let folderId = (folderVal && folderVal !== '__root') ? folderVal : null;
     let content = text;
     let fileBuffer = null;
-    let groupName = null;
     if (file) {
       if (format === 'shp') {
         fileBuffer = await file.arrayBuffer();
       } else {
         content = await file.text();
       }
-      if (useFileName) {
-        groupName = file.name.replace(/\.[^.]+$/, '');
-      }
-    } else if (useFileName && text) {
-      // 粘贴内容时无文件名，用格式名作为分组
-      groupName = null;
     }
     if (!content && !fileBuffer) { toast('请选择文件或粘贴内容'); return; }
     try {
-      const result = await importData(content, format, fileBuffer, groupName);
-      // 刷新地图
-      for (const m of result.markers) mapMgr.addMarker(m);
-      for (const t of result.tracks) mapMgr.addTrack(t);
+      const result = await importData(content, format, fileBuffer, folderId);
+      await loadAllData();
+      refreshMap();
       close();
       toast(`导入成功: ${result.markers.length} 点位, ${result.tracks.length} 线路`);
       if (currentPanel === 'list') renderListPanel();
-      autoSync();
     } catch (e) {
       toast('导入失败: ' + e.message);
     }
@@ -594,14 +779,14 @@ function showExportModal() {
         <option value="csv">CSV</option>
       </select>
     </div>
-    <p style="color:var(--text-muted);font-size:13px">将导出全部本地点位和线路数据</p>`;
+    <p style="color:var(--text-muted);font-size:13px">将导出你的全部点位和线路数据</p>`;
   const footer = `<button class="btn btn-outline" id="expCancel">取消</button><button class="btn btn-primary" id="expGo">导出</button>`;
   const { close } = showModal('导出数据', body, footer);
   document.getElementById('expCancel').onclick = close;
   document.getElementById('expGo').onclick = async () => {
     const format = document.getElementById('expFormat').value;
     try {
-      const { content, ext } = await exportData(format);
+      const { content, ext } = await exportData(format, allMarkers, allTracks);
       downloadFile(content, `xiaobingmap_${Date.now()}.${ext}`);
       close();
       toast('导出成功');
@@ -626,9 +811,7 @@ function showAuthModal() {
     hideLoginGate();
     toast('登录成功');
     renderTopbar();
-    await doSync();
     await loadAndRenderAll();
-    if (isAdmin()) addAdminButton();
   };
   document.getElementById('authLogin').onclick = async () => {
     const u = document.getElementById('authUser').value.trim();
@@ -677,9 +860,7 @@ function showLoginGate() {
     hideLoginGate();
     toast('登录成功');
     renderTopbar();
-    await doSync();
     await loadAndRenderAll();
-    if (isAdmin()) addAdminButton();
   };
   document.getElementById('gateLogin').onclick = async () => {
     const u = document.getElementById('gateUser').value.trim();
@@ -729,6 +910,9 @@ async function doLogout() {
   renderTopbar();
   mapMgr.clearMarkers();
   mapMgr.clearTracks();
+  allFolders = [];
+  allMarkers = [];
+  allTracks = [];
   const adminBtn = document.getElementById('btnAdmin');
   if (adminBtn) adminBtn.remove();
   if (currentPanel) {
@@ -738,35 +922,17 @@ async function doLogout() {
   showLoginGate();
 }
 
-// ---- 同步 ----
-let syncTimer = null;
-async function doSync() {
-  const statusEl = document.getElementById('syncStatus');
-  if (statusEl) statusEl.textContent = '同步中...';
-  const result = await syncAll();
-  if (result.synced) {
-    if (statusEl) statusEl.textContent = '已同步';
-    toast('同步成功');
-    await loadAndRenderAll();
-  } else {
-    if (statusEl) statusEl.textContent = isOnline() ? '同步失败' : '离线';
-    if (isOnline()) toast('同步失败: ' + result.reason);
-  }
-}
-
-function autoSync() {
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => { if (isOnline()) doSync(); }, 3000);
-}
-
-// ---- 加载并渲染所有数据 ----
-async function loadAndRenderAll() {
+// ---- 刷新地图 ----
+function refreshMap() {
   mapMgr.clearMarkers();
   mapMgr.clearTracks();
-  const markers = await localMarkers.list();
-  const tracks = await localTracks.list();
-  for (const m of markers) mapMgr.addMarker(m);
-  for (const t of tracks) mapMgr.addTrack(t);
+  for (const m of allMarkers) mapMgr.addMarker(m);
+  for (const t of allTracks) mapMgr.addTrack(t);
+}
+
+async function loadAndRenderAll() {
+  await loadAllData();
+  refreshMap();
   if (currentPanel === 'list') renderListPanel();
 }
 
@@ -775,61 +941,100 @@ async function renderAdminPanel() {
   const panel = document.querySelector('.side-panel');
   panel.querySelector('.panel-header').innerHTML = `<h2>管理后台</h2>`;
   try {
-    const [users, markers, tracks] = await Promise.all([
-      api.adminListUsers(), api.adminListAllMarkers(), api.adminListAllTracks()
+    const [users, markersData, tracksData] = await Promise.all([
+      profiles.list(),
+      markersDB.list(),
+      tracksDB.list(),
     ]);
+
     let html = '<div class="section-title">用户管理</div>';
-    html += '<table class="admin-table"><thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>操作</th></tr></thead><tbody>';
+    html += '<table class="admin-table"><thead><tr><th>用户名</th><th>角色</th><th>操作</th></tr></thead><tbody>';
     for (const u of users) {
-      html += `<tr><td>${u.id}</td><td>${esc(u.username)}</td><td>${u.role}</td>
-        <td>${u.role !== 'admin' ? `<button class="btn btn-danger btn-sm" data-del-user="${u.id}">删除</button>` : '-'}</td></tr>`;
+      html += `<tr><td>${esc(u.username)}</td><td>${u.role === 'admin' ? '管理员' : '普通用户'}</td>
+        <td>
+          ${u.role !== 'admin' ? `<button class="btn btn-outline btn-sm" data-promote-user="${u.id}">设为管理员</button>` : ''}
+          ${u.id !== getUser().id ? `<button class="btn btn-danger btn-sm" data-del-user="${u.id}">删除</button>` : ''}
+        </td></tr>`;
     }
     html += '</tbody></table>';
-    html += `<div class="section-title">全部点位 (${markers.length})</div>`;
-    html += `<button class="btn btn-outline btn-sm" id="adminExpMarkers">导出全部点位</button> `;
-    html += `<button class="btn btn-danger btn-sm" id="adminDelAllMarkers">删除全部点位</button>`;
-    html += `<div class="section-title">全部线路 (${tracks.length})</div>`;
-    html += `<button class="btn btn-outline btn-sm" id="adminExpTracks">导出全部线路</button> `;
-    html += `<button class="btn btn-danger btn-sm" id="adminDelAllTracks">删除全部线路</button>`;
+
+    html += `<div class="section-title">全部点位 (${markersData.length})</div>`;
+    html += `<div style="display:flex;gap:4px;flex-wrap:wrap">`;
+    html += `<button class="btn btn-outline btn-sm" id="adminExpMarkers">导出全部</button>`;
+    html += `<button class="btn btn-danger btn-sm" id="adminDelAllMarkers">清空全部</button></div>`;
+    html += `<div class="section-title">全部线路 (${tracksData.length})</div>`;
+    html += `<div style="display:flex;gap:4px;flex-wrap:wrap">`;
+    html += `<button class="btn btn-outline btn-sm" id="adminExpTracks">导出全部</button>`;
+    html += `<button class="btn btn-danger btn-sm" id="adminDelAllTracks">清空全部</button></div>`;
+
+    // 按用户列出数据概要
+    html += '<div class="section-title">用户数据概览</div>';
+    html += '<table class="admin-table"><thead><tr><th>用户名</th><th>点位数</th><th>线路数</th></tr></thead><tbody>';
+    for (const u of users) {
+      const mkCount = markersData.filter(m => m.user_id === u.id).length;
+      const tkCount = tracksData.filter(t => t.user_id === u.id).length;
+      html += `<tr><td>${esc(u.username)}</td><td>${mkCount}</td><td>${tkCount}</td></tr>`;
+    }
+    html += '</tbody></table>';
+
     panel.querySelector('.panel-body').innerHTML = html;
+
+    // 用户操作
     panel.querySelectorAll('[data-del-user]').forEach(btn => {
       btn.onclick = async () => {
-        if (!confirm('确认删除该用户？')) return;
+        if (!confirm('确认删除该用户及其所有数据？')) return;
         try {
-          await api.adminDeleteUser(btn.dataset.delUser);
-          toast('已删除');
+          await profiles.remove(btn.dataset.delUser);
+          toast('已删除用户');
           renderAdminPanel();
         } catch (e) { toast('删除失败: ' + e.message); }
       };
     });
+    panel.querySelectorAll('[data-promote-user]').forEach(btn => {
+      btn.onclick = async () => {
+        try {
+          await profiles.setRole(btn.dataset.promoteUser, 'admin');
+          toast('已设为管理员');
+          renderAdminPanel();
+        } catch (e) { toast('操作失败: ' + e.message); }
+      };
+    });
+
+    // 导出全部
     document.getElementById('adminExpMarkers').onclick = () => {
-      const gj = { type: 'FeatureCollection', features: markers.map(m => ({
+      const gj = { type: 'FeatureCollection', features: markersData.map(m => ({
         type: 'Feature', geometry: { type: 'Point', coordinates: [m.lng, m.lat] },
-        properties: { name: m.name, remark: m.remark, group: m.group, user: m.username }
+        properties: { name: m.name, remark: m.remark }
       })) };
       downloadFile(JSON.stringify(gj, null, 2), `all_markers_${Date.now()}.geojson`);
     };
     document.getElementById('adminExpTracks').onclick = () => {
-      const gj = { type: 'FeatureCollection', features: tracks.map(t => ({
+      const gj = { type: 'FeatureCollection', features: tracksData.map(t => ({
         type: 'Feature', geometry: { type: 'LineString', coordinates: t.points || [] },
-        properties: { name: t.name, remark: t.remark, group: t.group, user: t.username }
+        properties: { name: t.name, remark: t.remark }
       })) };
       downloadFile(JSON.stringify(gj, null, 2), `all_tracks_${Date.now()}.geojson`);
     };
+
+    // 清空全部（管理员只能删除能看到的数据，即所有用户的）
     document.getElementById('adminDelAllMarkers').onclick = async () => {
-      if (!confirm('确认删除全部点位？')) return;
-      await api.adminDeleteMarkers(markers.map(m => m.id));
-      toast('已删除全部点位');
-      renderAdminPanel();
+      if (!confirm('确认删除全部用户的所有点位？此操作不可撤销！')) return;
+      try {
+        await markersDB.removeMany(markersData.map(m => m.id));
+        toast('已清空全部点位');
+        renderAdminPanel();
+      } catch (e) { toast('操作失败: ' + e.message); }
     };
     document.getElementById('adminDelAllTracks').onclick = async () => {
-      if (!confirm('确认删除全部线路？')) return;
-      await api.adminDeleteTracks(tracks.map(t => t.id));
-      toast('已删除全部线路');
-      renderAdminPanel();
+      if (!confirm('确认删除全部用户的所有线路？此操作不可撤销！')) return;
+      try {
+        await tracksDB.removeMany(tracksData.map(t => t.id));
+        toast('已清空全部线路');
+        renderAdminPanel();
+      } catch (e) { toast('操作失败: ' + e.message); }
     };
   } catch (e) {
-    panel.querySelector('.panel-body').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
+    panel.querySelector('.panel-body').innerHTML = `<div class="empty-state">加载失败: ${esc(e.message)}</div>`;
   }
 }
 
@@ -848,11 +1053,6 @@ function renderDebugLogs() {
   body.scrollTop = body.scrollHeight;
 }
 
-// ---- HTML 转义 ----
-function esc(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 // ---- 初始化 ----
 async function init() {
   const root = document.getElementById('app');
@@ -863,7 +1063,7 @@ async function init() {
       <div class="map-container">
         <div class="toolbar"></div>
         <div class="search-box">
-          <input type="text" id="coordSearch" placeholder="搜索坐标或收藏名称..." title="输入坐标定位(如 103.044,25.147)或搜索已保存的点位/线路名称">
+          <input type="text" id="coordSearch" placeholder="搜索坐标或收藏名称..." title="输入坐标定位或搜索已保存的点位/线路名称">
           <button id="searchGo" title="定位">🔍</button>
         </div>
         <div id="map"></div>
@@ -885,39 +1085,22 @@ async function init() {
   renderGPSBtn();
   renderSearchBox();
 
-  // 调试控制台事件
   document.getElementById('dbgClear').onclick = () => { clearLogs(); renderDebugLogs(); };
   document.getElementById('dbgClose').onclick = toggleDebug;
   window.addEventListener('debuglog', () => {
     if (document.querySelector('.debug-console.open')) renderDebugLogs();
   });
 
-  // 在线/离线事件
-  window.addEventListener('online', () => {
-    document.getElementById('syncStatus').textContent = '在线';
-    toast('已联网，开始同步');
-    doSync();
-  });
-  window.addEventListener('offline', () => {
-    document.getElementById('syncStatus').textContent = '离线';
-    toast('已断网，可离线编辑');
-  });
-
-  // 鉴权初始化
   await initAuth();
   renderTopbar();
 
   if (!isLoggedIn()) {
-    // 未登录：显示登录拦截，不加载任何数据
     showLoginGate();
   } else {
-    // 已登录：正常进入
     setTimeout(async () => {
       mapMgr.invalidateSize();
-      await doSync();
       await loadAndRenderAll();
     }, 300);
-    if (isAdmin()) addAdminButton();
   }
 }
 
